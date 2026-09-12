@@ -2,6 +2,7 @@ import type { AssistantMessageEventStream, ToolCall } from "@earendil-works/pi-a
 import { ClaudeCodeError } from "./errors.ts";
 import {
   parseRateLimitNotice,
+  rateLimitRejectionMessage,
   terminalResultErrorDetail,
   validateClaudeInitialization,
   type RateLimitNoticeSink,
@@ -76,7 +77,6 @@ export class ClaudeEventMapper {
   private readonly onToolUse: () => void;
   private readonly onRateLimitNotice: RateLimitNoticeSink;
   private readonly onResponseAnnouncement: ResponseAnnouncementSink;
-  private readonly emittedRateLimitNotices = new Set<string>();
   private assistantDiagnostic: string | undefined;
   private readonly privatePaths: readonly string[];
 
@@ -413,20 +413,14 @@ export class ClaudeEventMapper {
   private acceptRateLimit(info: unknown): void {
     const notice = parseRateLimitNotice(info);
     if (!notice) return;
-    const noticeKey = JSON.stringify(notice);
-    if (!this.emittedRateLimitNotices.has(noticeKey)) {
-      this.emittedRateLimitNotices.add(noticeKey);
-      try {
-        this.onRateLimitNotice(notice);
-      } catch {
-        // UI notifications are advisory and must never fail a provider request.
-      }
+    // Repeats are de-duplicated once per session by the extension's notifier,
+    // which serves web search too.
+    try {
+      this.onRateLimitNotice(notice);
+    } catch {
+      // UI notifications are advisory and must never fail a provider request.
     }
-    if (notice.status === "rejected") {
-      const reset = notice.resetsAt === undefined ? "" : `; resets at ${new Date(notice.resetsAt).toISOString()}`;
-      const reason = notice.overageDisabledReason === undefined ? "" : `; ${notice.overageDisabledReason}`;
-      this.rejectedRateLimit = `Claude rate limit rejected (${notice.rateLimitType})${reason}${reset}`;
-    }
+    if (notice.status === "rejected") this.rejectedRateLimit = rateLimitRejectionMessage(notice);
   }
 
   private applyModelUsage(value: unknown): void {

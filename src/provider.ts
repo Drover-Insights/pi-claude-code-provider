@@ -659,8 +659,9 @@ async function applyPayloadHook(model: Model<Api>, context: Context, options?: S
     tools: context.tools,
   };
   // Pi supplies this callback even when no extension handler replaces the
-  // payload. Validate the effective post-callback object here; serialization
-  // remains a separate fail-closed defense for direct/internal callers.
+  // payload. Only the top-level shape is checked here, because the system-prompt
+  // budget reads it before preparation; prepareRequest owns every per-message,
+  // per-block, and per-tool rule.
   const replacement = await options?.onPayload?.(logical, model);
   return validateLogicalPayload(replacement === undefined ? logical : replacement);
 }
@@ -679,81 +680,5 @@ function validateLogicalPayload(value: unknown): Context {
   if (payload.systemPrompt !== undefined && typeof payload.systemPrompt !== "string") {
     throw new ClaudeCodeError("payload_invalid", "Logical provider systemPrompt must be a string");
   }
-  for (const message of payload.messages as unknown[]) validateLogicalMessage(message);
-  for (const tool of (payload.tools ?? []) as unknown[]) validateLogicalTool(tool);
   return { systemPrompt: payload.systemPrompt, messages: payload.messages, tools: payload.tools };
-}
-
-function validateLogicalMessage(value: unknown): void {
-  const message = logicalObject(value, "message");
-  if (message.role === "user") {
-    if (typeof message.content === "string") return;
-    validateContent(message.content, new Set(["text", "image"]), "user");
-    return;
-  }
-  if (message.role === "assistant") {
-    validateContent(message.content, new Set(["text", "thinking", "toolCall"]), "assistant");
-    return;
-  }
-  if (message.role === "toolResult") {
-    nonemptyString(message.toolCallId, "tool-result ID");
-    nonemptyString(message.toolName, "tool-result name");
-    if (typeof message.isError !== "boolean") invalidPayload("Tool-result isError must be boolean");
-    validateContent(message.content, new Set(["text", "image"]), "toolResult");
-    return;
-  }
-  invalidPayload(`Unsupported logical message role: ${String(message.role)}`);
-}
-
-function validateContent(value: unknown, allowed: ReadonlySet<string>, role: string): void {
-  if (!Array.isArray(value)) invalidPayload(`Logical ${role} content must be an array`);
-  for (const valueBlock of value) {
-    const block = logicalObject(valueBlock, `${role} content block`);
-    if (typeof block.type !== "string" || !allowed.has(block.type)) {
-      invalidPayload(`Unsupported logical ${role} content block: ${String(block.type)}`);
-    }
-    if (block.type === "text") {
-      if (typeof block.text !== "string") invalidPayload("Logical text content must contain text");
-    } else if (block.type === "thinking") {
-      if (typeof block.thinking !== "string") invalidPayload("Logical thinking content must contain thinking");
-      if (block.redacted !== undefined && typeof block.redacted !== "boolean") invalidPayload("Logical thinking redacted must be boolean");
-    } else if (block.type === "toolCall") {
-      nonemptyString(block.id, "tool-call ID");
-      nonemptyString(block.name, "tool-call name");
-      serializableObject(block.arguments, "tool-call arguments");
-    } else if (block.type === "image") {
-      if (typeof block.data !== "string" || typeof block.mimeType !== "string") {
-        invalidPayload("Logical image content must contain string data and mimeType");
-      }
-    }
-  }
-}
-
-function validateLogicalTool(value: unknown): void {
-  const tool = logicalObject(value, "tool");
-  nonemptyString(tool.name, "tool name");
-  if (typeof tool.description !== "string") invalidPayload("Logical tool description must be a string");
-  serializableObject(tool.parameters, "tool schema");
-}
-
-function logicalObject(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) invalidPayload(`Logical ${label} must be an object`);
-  return value as Record<string, unknown>;
-}
-
-function nonemptyString(value: unknown, label: string): void {
-  if (typeof value !== "string" || !value.trim()) invalidPayload(`Logical ${label} must be a nonempty string`);
-}
-
-function serializableObject(value: unknown, label: string): void {
-  if (!value || typeof value !== "object" || Array.isArray(value)) invalidPayload(`Logical ${label} must be an object`);
-  try {
-    if (typeof JSON.stringify(value) !== "string") invalidPayload(`Logical ${label} must be JSON-serializable`);
-  } catch {
-    invalidPayload(`Logical ${label} must be JSON-serializable`);
-  }
-}
-
-function invalidPayload(message: string): never {
-  throw new ClaudeCodeError("payload_invalid", message);
 }

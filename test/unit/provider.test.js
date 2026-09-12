@@ -146,29 +146,29 @@ test("provider rejects malformed logical payloads before claim or spawn", async 
     const fake = await fakeClaude(`fs.writeFileSync(${JSON.stringify(marker)}, "spawned");`);
     const circular = {};
     circular.self = circular;
-    const invalidMessages = [
-        [{ role: "future", content: [] }],
-        [{ role: "user", content: [{ type: "text", text: 42 }] }],
-        [{ role: "assistant", content: [{ type: "thinking", thinking: false }] }],
-        [{ role: "assistant", content: [{ type: "toolCall", id: 1, name: "read", arguments: {} }] }],
-        [{ role: "assistant", content: [{ type: "toolCall", id: "call", name: "read", arguments: [] }] }],
-        [{ role: "toolResult", toolCallId: "call", toolName: "read", content: [], isError: "false" }],
-        [{ role: "user", content: [{ type: "image", data: "AA==" }] }],
-    ];
-    const replacements = [
-        ...invalidMessages.map((messages) => ({ messages, tools: [] })),
-        { messages: context.messages, tools: [{ name: "read", description: "read", parameters: [] }] },
-        { messages: context.messages, tools: [{ name: "read", description: "read", parameters: circular }] },
+    const cases = [
+        [[null], [], /invalid message/],
+        [[{ role: "future", content: [] }], [], /Unsupported Pi message role: future/],
+        [[{ role: "user", content: [{ type: "text", text: 42 }] }], [], /text content must contain text/],
+        [[{ role: "assistant", content: { type: "text", text: "not an array" } }], [], /assistant content must be an array/],
+        [[{ role: "assistant", content: [{ type: "thinking", thinking: false }] }], [], /thinking content must contain thinking/],
+        [[{ role: "assistant", content: [{ type: "toolCall", id: 1, name: "read", arguments: {} }] }], [], /tool-call ID must be a nonempty string/],
+        [[{ role: "assistant", content: [{ type: "toolCall", id: "call", name: "read", arguments: [] }] }], [], /tool-call arguments must be an object/],
+        [[{ role: "toolResult", toolCallId: "call", toolName: "read", content: [], isError: "false" }], [], /isError must be boolean/],
+        [[{ role: "user", content: [{ type: "image", data: "AA==" }] }], [], /Unsupported image type/],
+        [context.messages, [null], /invalid active tool/],
+        [context.messages, [{ name: "read", description: "read", parameters: [] }], /active tool schema must be an object/],
+        [context.messages, [{ name: "read", description: "read", parameters: circular }], /must be JSON-serializable/],
     ];
     let claims = 0;
     try {
-        for (const replacement of replacements) {
+        for (const [messages, tools, expected] of cases) {
             const result = await createClaudeStream(
                 { executable: fake.executable, version: "test", subscriptionType: "pro" },
                 { claimLaunch: async () => { claims++; } },
-            )(model, context, { onPayload: () => replacement }).result();
+            )(model, context, { onPayload: () => ({ messages, tools }) }).result();
             assert.equal(result.stopReason, "error");
-            assert.match(result.errorMessage ?? "", /logical|payload|JSON-serializable|Unsupported|boolean/i);
+            assert.match(result.errorMessage ?? "", expected);
         }
         assert.equal(claims, 0);
         await assert.rejects(access(marker));

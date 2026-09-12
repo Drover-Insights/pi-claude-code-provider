@@ -28,6 +28,8 @@ import { providerArgs } from "../src/claude-args.ts";
 // Anthropic permits four cache breakpoints per request. A fifth is rejected
 // outright, so this is a hard ceiling rather than a quality signal.
 const MAX_BREAKPOINTS = 4;
+// A CLI that neither sends a request nor exits would otherwise hang the capture.
+const CAPTURE_TIMEOUT_MS = 60_000;
 // Transcript-dominant padding, well past every model's minimum cacheable prefix,
 // so a cached system prompt cannot stand in for a reusable history.
 const PAD = Array.from({ length: 2600 }, (_, index) => `stable-${index % 97}`).join(" ");
@@ -134,11 +136,17 @@ async function captureOnce(options, executable, home) {
     for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]) delete env[name];
     const child = spawn(executable, args, { cwd: directory, env, stdio: ["pipe", "ignore", "ignore"] });
     child.stdin.end(`${JSON.stringify({ type: "user", message: { role: "user", content: prompt } })}\n`);
+    let timer;
     const captured = await Promise.race([
       body,
       new Promise((_, reject) => child.once("exit", () => setTimeout(() => reject(new Error("Claude Code sent no request to the local capture server")), 1000))),
-    ]);
-    child.kill();
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Claude Code sent no request within ${CAPTURE_TIMEOUT_MS}ms`)), CAPTURE_TIMEOUT_MS);
+      }),
+    ]).finally(() => {
+      clearTimeout(timer);
+      child.kill();
+    });
     return { body: redact(JSON.parse(captured)), prompt };
   } finally {
     server.close();
@@ -187,12 +195,14 @@ function report(captures) {
   }
 
   const earlier = flatten(captures[0].body);
-  const varying = blocks.findIndex(([, block], position) => earlier[position]?.[1]?.text !== block.text);
+  // Compare whole blocks: an image or tool block can change without a text field.
+  const varying = blocks.findIndex(([, block], position) => JSON.stringify(earlier[position]?.[1]) !== JSON.stringify(block));
   if (varying === -1) {
     console.log("first varying:  nothing; the two captures are byte-identical");
   } else {
     console.log(`first varying:  ${blocks[varying][0]} (${region(varying)})`);
-    const [left, right] = [earlier[varying]?.[1]?.text ?? "", blocks[varying][1].text ?? ""].map((text) => text.split("\n"));
+    const shown = (block) => (block === undefined ? "" : typeof block.text === "string" ? block.text : JSON.stringify(block));
+    const [left, right] = [earlier[varying]?.[1], blocks[varying][1]].map((block) => shown(block).split("\n"));
     for (const [index, line] of right.entries()) {
       if (left[index] !== line) console.log(`  - ${left[index] ?? ""}\n  + ${line}`);
     }

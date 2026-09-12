@@ -11,7 +11,7 @@ import { recordSearchMetrics } from "./metrics.ts";
 import { claimPaidTestLaunch } from "./paid-launch-budget.ts";
 import { ProcessTerminationError, superviseProcess, type ProcessSupervisor } from "./process-utils.ts";
 import { createRuntimeDirectory, recordRuntimeChild, removeRuntimeDirectory } from "./runtime-directories.ts";
-import { parseRateLimitNotice, terminalResultErrorDetail, type RateLimitNoticeSink, validateClaudeInitialization } from "./claude-protocol.ts";
+import { parseRateLimitNotice, rateLimitRejectionMessage, terminalResultErrorDetail, type RateLimitNoticeSink, validateClaudeInitialization } from "./claude-protocol.ts";
 
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
 const MAX_REQUEST_BYTES = 64 * 1024;
@@ -328,10 +328,7 @@ class SearchProtocol {
         } catch {
           // UI notifications are advisory and must never fail a search request.
         }
-        if (notice.status === "rejected") {
-          const reset = notice.resetsAt === undefined ? "" : `; resets at ${new Date(notice.resetsAt).toISOString()}`;
-          this.rateLimitFailure = `Claude rate limit rejected (${notice.rateLimitType})${reset}`;
-        }
+        if (notice.status === "rejected") this.rateLimitFailure = rateLimitRejectionMessage(notice);
       }
     } else if (
       record.type !== "stream_event" &&

@@ -10,7 +10,7 @@ export const VERIFIED_VERSIONS = Object.freeze({
 // gate has validated and rises on its own schedule. These fall or rise only by
 // an explicit decision about what is supported, so deriving one from the other
 // would turn every baseline bump into a silent, unreviewed support drop. Assert
-// nothing about their relative order: both start above today's baseline.
+// nothing about their relative order.
 export const MINIMUM_VERSIONS = Object.freeze({
   pi: "0.85.1",
   claudeCode: "2.1.261",

@@ -22,6 +22,13 @@ export interface RateLimitNotice {
 
 export type RateLimitNoticeSink = (notice: RateLimitNotice) => void;
 
+/** Failure text for a rate limit that rejected a provider or web-search request. */
+export function rateLimitRejectionMessage(notice: RateLimitNotice): string {
+  const reason = notice.overageDisabledReason === undefined ? "" : `; ${notice.overageDisabledReason}`;
+  const reset = notice.resetsAt === undefined ? "" : `; resets at ${new Date(notice.resetsAt).toISOString()}`;
+  return `Claude rate limit rejected (${notice.rateLimitType})${reason}${reset}`;
+}
+
 const EPOCH_MILLISECONDS_THRESHOLD = 100_000_000_000;
 
 export function parseRateLimitNotice(info: unknown): RateLimitNotice | undefined {

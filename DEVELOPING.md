@@ -118,7 +118,7 @@ Measured reuse by alias, on 2.1.269 at low effort. Every Claude 5 alias recovers
 
 Requests carrying generated image attachments have never cached through this provider on any build, because the CLI narrates its own attachment read, including the private directory path, ahead of the transcript.
 
-A turn may not append more than about twenty records. Each breakpoint walks back at most twenty positions to find a prior entry, and the documented exemption does not apply here: runs of consecutive `tool_use` or `tool_result` blocks collapse to one position, but `prepareRequest` gives every Pi message, each individual tool result included, its own plain text block. Measured on Sonnet, and reproduced on a second independent harness: 21 appended records still reused 91%, 25 dropped to 0%. The failure is total and silent, and there is no fix inside the four-breakpoint budget, so treat it as a ceiling on how much one turn may add rather than something to tune.
+A request may not append more than about twenty records to the history the previous request cached. Each breakpoint walks back at most twenty positions to find a prior entry, and the documented exemption does not apply here: runs of consecutive `tool_use` or `tool_result` blocks collapse to one position, but `prepareRequest` gives every Pi message, each individual tool result included, its own plain text block. Measured on Sonnet, and reproduced on a second independent harness: 21 appended records still reused 91%, 25 dropped to 0%. The failure is total and silent. Pi makes a new request after every tool round trip, so the records appended between requests are usually one assistant message plus one per parallel tool result; in practice only a step with about nineteen or more parallel tool calls reaches the ceiling. An intermediate breakpoint would exceed the four-breakpoint budget. Sending each run of consecutive tool results as one block would lift the ceiling, but that serialization change is untested and would need the paid cache gate.
 
 The cache probe seeds its padding with a per-run nonce. Its turns are otherwise identical between runs, so without one a warm entry from an earlier run can satisfy turn 2 while reuse inside the run is broken.
 
@@ -131,9 +131,10 @@ Windows cleanup must remain rooted at the exact retained child PID. Never replac
 When updating Claude compatibility:
 
 1. Compare the required CLI flags, initialization fields, stream records, and exact tool inventory.
-2. Cover readiness, invalid or oversized JSONL, timeouts, aborts, error exits, and descendant cleanup deterministically.
-3. Run guarded live, cache, and model gates only with explicit quota authorization.
-4. Update machine-readable and written baselines only after the gates pass.
+2. Run `npm run capture:claude-breakpoints` and continue only on a HEALTHY verdict within four breakpoints; a fifth fails every request.
+3. Cover readiness, invalid or oversized JSONL, timeouts, aborts, error exits, and descendant cleanup deterministically.
+4. Run guarded live, cache, and model gates only with explicit quota authorization.
+5. Update machine-readable and written baselines only after the gates pass.
 
 When updating Pi compatibility, read the current package, extension, provider, session, and compaction contracts, then test a clean Git or packed installation on both the npm and standalone distributions.
 
@@ -143,7 +144,7 @@ When updating Pi compatibility, read the current package, extension, provider, s
 2. Promote `[Unreleased]` in `CHANGELOG.md` to a dated version entry.
 3. Run `npm run release:check` and inspect `npm pack --dry-run`.
 4. Install the tarball in a fresh temporary directory and list its models with Pi.
-5. If runtime code changed, run the explicitly authorized paid release gate.
+5. If the Claude Code version under test changed since the last release, run `npm run capture:claude-breakpoints` and require a HEALTHY verdict. If runtime code changed, run the explicitly authorized paid release gate.
 6. Run `npm publish --dry-run` and inspect the exact inventory.
 7. Publish, tag, and create the GitHub release only with maintainer authorization.
 

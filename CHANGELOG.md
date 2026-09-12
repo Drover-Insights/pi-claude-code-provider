@@ -15,6 +15,8 @@
 ### Changed
 
 - A model must now report a usable context window. A missing or non-positive `contextWindow` previously skipped the context-budget check silently, leaving the request unbounded; it now fails with `context_window`. Pi validates this when a custom model is defined but not when a per-model override sets it, so an override is the reachable cause and the message says so. Fractional values are accepted, since the window is only compared.
+- Malformed messages, content blocks, and tools in a request context now fail with transcript preparation's `content_shape`, `content_type`, or image error categories instead of `payload_invalid`, which remains for a payload with an invalid top-level shape. Two layers previously checked the same rules.
+- Web-search rate-limit rejections now include the overage-disabled reason, matching provider requests.
 
 ## [0.2.0] - 2026-09-05
 

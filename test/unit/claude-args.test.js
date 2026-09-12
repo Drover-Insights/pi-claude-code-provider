@@ -43,7 +43,7 @@ test("every advertised alias is passed to Claude verbatim", () => {
     }
 });
 
-test("pins cache-stable Claude settings and omits fixed outer guidance", () => {
+test("pins cache-stable Claude settings", () => {
     const args = baseClaudeArgs();
     const settings = JSON.parse(args[args.indexOf("--settings") + 1]);
     assert.deepEqual(settings, {
@@ -51,58 +51,14 @@ test("pins cache-stable Claude settings and omits fixed outer guidance", () => {
         autoMemoryEnabled: false,
         totalTokensReminder: "off",
     });
-    const prepared = {
-        directory: "/tmp/private",
-        transcriptBlocks: ['{"protocol":"test"}'],
-        attachmentPaths: [],
-        systemPromptPath: "/tmp/private/system-prompt.txt",
-        toolNames: new Map(),
-        transcriptBytes: 1,
-        catalogBytes: 0,
-        imageBytes: 0,
-    };
-    const generated = providerArgs(prepared, "sonnet", "low");
-    assert.deepEqual(generated.prompt, [
-        { type: "text", text: prepared.transcriptBlocks[0], cache_control: { type: "ephemeral", ttl: "1h" } },
-    ]);
 });
 
-test("the cache breakpoint marks the last history block and nothing after it", () => {
-    // Claude Code 2.1.268 stopped marking the transcript itself, so the transport
-    // sets the breakpoint. It must land on unchanged history: the attachment suffix
-    // grows whenever an image is added, and marking that would invalidate the
-    // cached prefix on exactly the turns caching is meant to help.
-    const prepared = {
-        directory: "/tmp/private",
-        transcriptBlocks: ['{"protocol":"test"}', '{"role":"user"}', '{"role":"assistant"}'],
-        attachmentPaths: ["/tmp/private/image.png"],
-        systemPromptPath: "/tmp/private/system-prompt.txt",
-        toolNames: new Map(),
-        transcriptBytes: 1,
-        catalogBytes: 0,
-        imageBytes: 1,
-    };
-    const { prompt } = providerArgs(prepared, "sonnet", "low");
-    const marked = prompt.filter((block) => block.cache_control !== undefined);
-    assert.equal(marked.length, 1);
-    assert.equal(marked[0].text, prepared.transcriptBlocks.at(-1));
-    // The API requires breakpoints in longest-TTL-first order, and Claude Code
-    // places one of its own 1h markers after this one, so a shorter TTL here is
-    // rejected outright rather than merely expiring sooner.
-    assert.deepEqual(marked[0].cache_control, { type: "ephemeral", ttl: "1h" });
-    assert.equal(prompt.at(-1).cache_control, undefined);
-    // An empty history has nothing to mark; a marker with no block is invalid.
-    const empty = providerArgs({ ...prepared, transcriptBlocks: [], attachmentPaths: [] }, "sonnet", "low");
-    assert.deepEqual(empty.prompt, []);
-});
-
-test("the transport can never violate the cache breakpoint budget or ordering", () => {
-    // Four breakpoints is the API maximum and a fifth is rejected outright, so
-    // the provider must contribute at most one however long the history is.
-    // Ordering is longest-TTL-first, and Claude Code places a 1h marker after
-    // ours, so ours may never be shorter. Both invariants are properties of what
-    // the provider emits; that Claude Code preserves them on the wire is what
-    // npm run capture:claude-breakpoints checks, and a unit test cannot.
+test("marks exactly the last history block with a 1h cache breakpoint", () => {
+    // Claude Code 2.1.268 stopped marking the transcript, so the transport does.
+    // The marker belongs on unchanged history, never on the growing attachment
+    // suffix, and must be 1h: the API orders breakpoints longest-TTL-first and
+    // Claude Code places a 1h marker after this one. The on-the-wire total is
+    // checked by npm run capture:claude-breakpoints, not by a unit test.
     const prepared = {
         directory: "/tmp/private",
         transcriptBlocks: Array.from({ length: 40 }, (_, index) => `{"record":${index}}`),
@@ -113,9 +69,14 @@ test("the transport can never violate the cache breakpoint budget or ordering", 
         catalogBytes: 0,
         imageBytes: 1,
     };
-    const { prompt } = providerArgs(prepared, "opus", "max");
-    const ttls = prompt.flatMap((block) => (block.cache_control ? [block.cache_control.ttl] : []));
-    assert.deepEqual(ttls, ["1h"]);
+    const { prompt } = providerArgs(prepared, "sonnet", "low");
+    const marked = prompt.filter((block) => block.cache_control !== undefined);
+    assert.deepEqual(marked, [
+        { type: "text", text: prepared.transcriptBlocks.at(-1), cache_control: { type: "ephemeral", ttl: "1h" } },
+    ]);
+    assert.equal(prompt.at(-1).cache_control, undefined);
+    // An empty history has nothing to mark; a marker with no block is invalid.
+    assert.deepEqual(providerArgs({ ...prepared, transcriptBlocks: [], attachmentPaths: [] }, "sonnet", "low").prompt, []);
 });
 
 test("proposal MCP server launches the bridge through the hosting runtime", () => {

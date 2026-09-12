@@ -291,12 +291,13 @@ test("rejects a tool acknowledgement while arguments remain incomplete", () => {
     mapper.accept({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_open", name: "mcp__pi__read", input: {} } } });
     assert.throws(() => mapper.accept(exactToolTerminationResult(), "tool_handoff"), /unclosed content blocks/);
 });
-test("emits validated rate-limit notices once and retains rejected diagnostics", () => {
+test("emits validated rate-limit notices and retains rejected diagnostics", () => {
+    // Repeats are de-duplicated per session by the extension, not here; see
+    // extension.test.js "reports a repeated rate-limit warning once per session".
     const notices = [];
     const mapper = new ClaudeEventMapper(createAssistantMessageEventStream(), createOutput(model), new Set(), new Map(), () => { }, (notice) => notices.push(notice));
     init(mapper);
     mapper.accept({ type: "rate_limit_event", rate_limit_info: { status: "allowed" } });
-    mapper.accept({ type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.876 } });
     mapper.accept({ type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.876 } });
     mapper.accept({ type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "five_hour", resetsAt: 1_800_000_000 } });
     assert.deepEqual(notices, [

@@ -77,8 +77,8 @@ function serializeToolCatalog(tools: Tool[], limits: RequestPreparationLimits): 
   publicMap: Array<{ transportName: string; piName: string }>;
 } {
   if (tools.length > limits.tools) throw new ClaudeCodeError("tool_limit", `At most ${limits.tools} active tools are supported`);
-  for (const tool of tools as unknown as Array<Record<string, unknown>>) {
-    if (typeof tool.name !== "string" || !tool.name.trim() || typeof tool.description !== "string") {
+  for (const tool of tools as unknown as Array<Record<string, unknown> | null>) {
+    if (!tool || typeof tool !== "object" || Array.isArray(tool) || typeof tool.name !== "string" || !tool.name.trim() || typeof tool.description !== "string") {
       throw new ClaudeCodeError("content_shape", "Pi context contained an invalid active tool");
     }
     requireSerializableObject(tool.parameters, "active tool schema");
@@ -150,6 +150,9 @@ export async function prepareRequestWithLimits(
           throw new ClaudeCodeError("content_shape", `Pi ${role} content must be an array of content blocks`);
         }
         return content;
+      }
+      if (!Array.isArray(content)) {
+        throw new ClaudeCodeError("content_shape", `Pi ${role} content must be an array of content blocks`);
       }
       const output: unknown[] = [];
       for (const raw of content) {
@@ -224,6 +227,9 @@ export async function prepareRequestWithLimits(
 
     const messages: unknown[] = [];
     for (const message of context.messages) {
+      if (!message || typeof message !== "object" || Array.isArray(message)) {
+        throw new ClaudeCodeError("content_shape", "Pi context contained an invalid message");
+      }
       if (message.role === "user") {
         messages.push({ role: "user", content: await serializeContent(message.content, "user") });
       } else if (message.role === "assistant") {
