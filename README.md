@@ -76,7 +76,7 @@ Rate-limit warnings and reset times appear as Pi notifications when Claude provi
 
 ## Compatibility limitation
 
-Claude Code's public headless protocol cannot accept arbitrary historical assistant and tool-result messages, so the provider sends Pi's complete current history as an append-stable semantic transcript on every request. Pi remains authoritative for branching, compaction, reloads, and provider handoff; the transport is not wire-equivalent to Anthropic's Messages API, consumes additional context, and leaves prompt-cache keys and retention to Claude.
+Claude Code's public headless protocol cannot accept arbitrary historical assistant and tool-result messages, so the provider sends Pi's complete current history as an append-stable semantic transcript on every request. Pi remains authoritative for branching, compaction, reloads, and provider handoff; the transport is not wire-equivalent to Anthropic's Messages API, consumes additional context, and sets only the history cache breakpoint, leaving prompt-cache keys and retention to Claude.
 
 ## Configuration
 

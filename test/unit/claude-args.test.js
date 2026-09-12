@@ -62,7 +62,38 @@ test("pins cache-stable Claude settings and omits fixed outer guidance", () => {
         imageBytes: 0,
     };
     const generated = providerArgs(prepared, "sonnet", "low");
-    assert.deepEqual(generated.prompt, [{ type: "text", text: prepared.transcriptBlocks[0] }]);
+    assert.deepEqual(generated.prompt, [
+        { type: "text", text: prepared.transcriptBlocks[0], cache_control: { type: "ephemeral", ttl: "1h" } },
+    ]);
+});
+
+test("the cache breakpoint marks the last history block and nothing after it", () => {
+    // Claude Code 2.1.268 stopped marking the transcript itself, so the transport
+    // sets the breakpoint. It must land on unchanged history: the attachment suffix
+    // grows whenever an image is added, and marking that would invalidate the
+    // cached prefix on exactly the turns caching is meant to help.
+    const prepared = {
+        directory: "/tmp/private",
+        transcriptBlocks: ['{"protocol":"test"}', '{"role":"user"}', '{"role":"assistant"}'],
+        attachmentPaths: ["/tmp/private/image.png"],
+        systemPromptPath: "/tmp/private/system-prompt.txt",
+        toolNames: new Map(),
+        transcriptBytes: 1,
+        catalogBytes: 0,
+        imageBytes: 1,
+    };
+    const { prompt } = providerArgs(prepared, "sonnet", "low");
+    const marked = prompt.filter((block) => block.cache_control !== undefined);
+    assert.equal(marked.length, 1);
+    assert.equal(marked[0].text, prepared.transcriptBlocks.at(-1));
+    // The API requires breakpoints in longest-TTL-first order, and Claude Code
+    // places one of its own 1h markers after this one, so a shorter TTL here is
+    // rejected outright rather than merely expiring sooner.
+    assert.deepEqual(marked[0].cache_control, { type: "ephemeral", ttl: "1h" });
+    assert.equal(prompt.at(-1).cache_control, undefined);
+    // An empty history has nothing to mark; a marker with no block is invalid.
+    const empty = providerArgs({ ...prepared, transcriptBlocks: [], attachmentPaths: [] }, "sonnet", "low");
+    assert.deepEqual(empty.prompt, []);
 });
 
 test("proposal MCP server launches the bridge through the hosting runtime", () => {

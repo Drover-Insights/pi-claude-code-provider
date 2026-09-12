@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,7 +57,11 @@ async function runCacheProbe(cwd) {
     ], "Pi cache probe");
     let completed = false;
     try {
-        const cacheSeed = Array.from({ length: 1800 }, (_, index) => `stable-${index % 97}`).join(" ");
+        // An earlier run of this stage seeds identical turns, and its entries can
+        // still be warm. Without a per-run nonce ahead of the padding, turn 2 can
+        // read that stale prefix and pass while reuse inside this run is broken.
+        const runNonce = randomUUID();
+        const cacheSeed = `run-${runNonce} ${Array.from({ length: 1800 }, (_, index) => `stable-${index % 97}`).join(" ")}`;
         // A cached prefix expires on a TTL, so a turn that merely took a long
         // time can miss for reasons unrelated to prefix stability. Record the
         // gaps and turn 1's write so a failure says which of the two it was.
