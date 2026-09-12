@@ -13,7 +13,6 @@ export const MAX_IMAGES = 20;
 export const MAX_TOOLS = 256;
 export const MAX_CATALOG_BYTES = 2 * 1024 * 1024;
 export const MAX_TRANSCRIPT_BYTES = 32 * 1024 * 1024;
-export const MAX_SYSTEM_PROMPT_BYTES = 120 * 1024;
 
 export interface RequestPreparationLimits {
   imageBytes: number;

@@ -11,7 +11,7 @@ import type {
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { buildClaudeEnvironment, claudeLaunch } from "./auth.ts";
 import { bridgeArgv, formatBridgeArgv, providerArgs } from "./claude-args.ts";
-import { MAX_SYSTEM_PROMPT_BYTES, prepareRequest } from "./context-serializer.ts";
+import { prepareRequest } from "./context-serializer.ts";
 import { appendCleanupFailure, ClaudeCodeError, errorText } from "./errors.ts";
 import { JsonlParser } from "./jsonl.ts";
 import { recordRequestMetrics } from "./metrics.ts";
@@ -195,12 +195,13 @@ export function createClaudeStream(
         metrics.messageCount = effectiveContext.messages.length;
         metrics.toolCount = effectiveContext.tools?.length ?? 0;
         const systemPromptBytes = Buffer.byteLength(effectiveContext.systemPrompt ?? "");
-        if (systemPromptBytes > MAX_SYSTEM_PROMPT_BYTES) {
-          throw new ClaudeCodeError(
-            "system_prompt_size",
-            `Pi system prompt is ${systemPromptBytes} bytes; the supported limit is ${MAX_SYSTEM_PROMPT_BYTES}`,
-          );
-        }
+        const maxOutputTokens = effectiveMaxOutputTokens(model, options?.maxTokens);
+        // Measured on the post-hook effective context and before preparation: a
+        // system prompt no served model can hold is refused before any private
+        // file exists, because nothing later in the request can make room for it.
+        const systemPromptTokens = estimateTransportTokens(0, 0, systemPromptBytes, 0);
+        metrics.estimatedInputTokens = systemPromptTokens;
+        validateSystemPromptBudget(model, systemPromptTokens, maxOutputTokens);
         prepared = await prepareRequest(effectiveContext);
         metrics.cleanupComplete = false;
         metrics.lastPhase = "prepared";
@@ -215,7 +216,6 @@ export function createClaudeStream(
         metrics.catalogBytes = prepared.catalogBytes;
         metrics.imageBytes = prepared.imageBytes;
         metrics.estimatedInputTokens = estimatedInputTokens;
-        const maxOutputTokens = effectiveMaxOutputTokens(model, options?.maxTokens);
         validateContextBudget(model, estimatedInputTokens, maxOutputTokens);
         const { args, prompt } = providerArgs(prepared, model.id, effort);
         const expectedTools = new Set(prepared.toolNames.keys());
@@ -520,9 +520,51 @@ function effectiveMaxOutputTokens(model: Model<Api>, requested: number | undefin
   return value;
 }
 
+/**
+ * A served context window is required rather than assumed. Skipping validation
+ * when none is reported would leave the request with no bound at all, and
+ * inventing a fallback ceiling would add a second unexplained limit that still
+ * could not show the request fits a window nobody stated.
+ *
+ * Only positivity and finiteness are required, because the value is compared
+ * and never propagated; a fractional override is harmless. Pi rejects a
+ * non-positive `contextWindow` when a custom model is defined but not when one
+ * overrides a registered model, so an override is the reachable cause here and
+ * the message names it.
+ */
+function requireContextWindow(model: Model<Api>): number {
+  const contextWindow = model.contextWindow;
+  if (typeof contextWindow !== "number" || !Number.isFinite(contextWindow) || contextWindow <= 0) {
+    throw new ClaudeCodeError(
+      "context_window",
+      `Pi model ${model.id} reports no usable context window (${String(contextWindow)}); ` +
+        `a positive number is required. Check for a contextWindow override on this model in Pi's model configuration.`,
+    );
+  }
+  return contextWindow;
+}
+
+/**
+ * Reject a system prompt that cannot fit even alone. The wording deliberately
+ * avoids `context_length_exceeded`: that phrase matches Pi's context-overflow
+ * patterns, which would spend a summarization request compacting history that
+ * can never make room for the system prompt.
+ */
+function validateSystemPromptBudget(model: Model<Api>, systemTokens: number, maxOutput: number): void {
+  const contextWindow = requireContextWindow(model);
+  if (systemTokens + maxOutput > contextWindow) {
+    throw new ClaudeCodeError(
+      "system_prompt_budget",
+      `Pi system prompt alone needs about ${systemTokens} tokens; with the ${maxOutput}-token output reserve ` +
+        `that exceeds the ${contextWindow}-token context of ${model.id}. Reduce loaded system instructions, ` +
+        `project context, or skill descriptions, or select a larger-context model.`,
+    );
+  }
+}
+
 function validateContextBudget(model: Model<Api>, estimatedInputTokens: number, maxOutput: number): void {
-  const contextWindow = model.contextWindow ?? 0;
-  if (contextWindow > 0 && estimatedInputTokens + maxOutput > contextWindow) {
+  const contextWindow = requireContextWindow(model);
+  if (estimatedInputTokens + maxOutput > contextWindow) {
     throw new ClaudeCodeError(
       "context_budget",
       `context_length_exceeded: estimated Claude Code transport input ${estimatedInputTokens} plus output reserve ${maxOutput} exceeds context ${contextWindow}`,

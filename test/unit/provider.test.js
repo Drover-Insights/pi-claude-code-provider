@@ -3,6 +3,7 @@ import { access, chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { isContextOverflow } from "@earendil-works/pi-ai";
 import { createClaudeStream, isExpectedToolHandoffExit, waitForReadyOrExit } from "../../src/provider.ts";
 import { getLastRequestMetrics } from "../../src/metrics.ts";
 import { superviseProcess, terminateProcessGroup } from "../../src/process-utils.ts";
@@ -960,7 +961,7 @@ test("MCP readiness has a bounded timeout even while the process remains alive",
         await rm(directory, { recursive: true, force: true });
     }
 });
-test("provider enforces idle, system-prompt, and context-budget limits", async () => {
+test("provider enforces idle and context-budget limits", async () => {
     const idle = await fakeClaude(`process.stdin.resume(); process.stdout.write(JSON.stringify(${JSON.stringify(init)}) + "\\n"); process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_start",message:{id:"idle",model:"claude-sonnet-5",usage:{}}}}) + "\\n"); setInterval(() => {}, 1000);`);
     const originalIdle = process.env.PI_CLAUDE_CODE_PROVIDER_IDLE_TIMEOUT_MS;
     const originalTotal = process.env.PI_CLAUDE_CODE_PROVIDER_TOTAL_TIMEOUT_MS;
@@ -979,13 +980,6 @@ test("provider enforces idle, system-prompt, and context-budget limits", async (
         await new Promise((resolve) => setTimeout(resolve, 5));
     }
     const installation = { executable: "/does/not/run", version: "test", subscriptionType: "pro" };
-    const systemResult = await createClaudeStream(installation)(model, { ...context, systemPrompt: "x".repeat(120 * 1024 + 1) }, { reasoning: "medium" }).result();
-    for (let attempt = 0; attempt < 20 && getLastRequestMetrics()?.errorCategory !== "system_prompt_size"; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-    assert.match(systemResult.errorMessage ?? "", /system prompt.*122880/i);
-    assert.equal(getLastRequestMetrics()?.errorCategory, "system_prompt_size");
-    assert.equal(getLastRequestMetrics()?.messageCount, 1);
     const tinyModel = { ...model, contextWindow: 100, maxTokens: 90 };
     const budgetResult = await createClaudeStream(installation)(tinyModel, context, { reasoning: "medium" }).result();
     for (let attempt = 0; attempt < 20 && getLastRequestMetrics()?.errorCategory !== "context_budget"; attempt++) {
@@ -1162,4 +1156,126 @@ test("provider fails before streaming when Pi's async response handler rejects",
     finally {
         await rm(fake.dir, { recursive: true, force: true });
     }
+});
+
+// A 200K-window model reserving 32K output admits at most 168,000 estimated
+// input tokens, which the byte estimator reaches at exactly 458,181 bytes.
+const BUDGET_MODEL = { ...model, contextWindow: 200_000, maxTokens: 32_000 };
+const LARGEST_ADMITTED_SYSTEM_PROMPT_BYTES = 458_181;
+const DEAD_INSTALLATION = { executable: "/does/not/run", version: "test", subscriptionType: "pro" };
+function markedSystemPrompt(bytes) {
+    const head = "ALPHA-MARKER-4417\n";
+    const tail = "\nOMEGA-MARKER-9308";
+    return head + "F".repeat(bytes - head.length - tail.length) + tail;
+}
+test("provider transports a system prompt far above the former size cap", async () => {
+    // 146,101 bytes is the size reported in issue #4, which the removed fixed
+    // cap refused outright. Both ends of the file must survive the transport,
+    // and the prompt must travel by path rather than in the argument vector.
+    const systemPrompt = markedSystemPrompt(146_101);
+    const fake = await fakeClaude(`
+const path = require("node:path");
+const text = fs.readFileSync(path.join(process.cwd(), "system-prompt.txt"), "utf8");
+fs.writeFileSync(path.join(__dirname, "captured-large"), JSON.stringify({
+  bytes: Buffer.byteLength(text),
+  head: text.slice(0, 32),
+  tail: text.slice(-32),
+  argv: process.argv.slice(2),
+}));
+setTimeout(() => {
+  process.stdout.write(JSON.stringify(${JSON.stringify(init)}) + "\\n");
+  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_start",message:{id:"msg_large",model:"claude-sonnet-5",usage:{input_tokens:0,output_tokens:0}}}}) + "\\n");
+  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_start",index:0,content_block:{type:"text",text:""}}}) + "\\n");
+  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_delta",index:0,delta:{type:"text_delta",text:"large ok"}}}) + "\\n");
+  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_stop",index:0}}) + "\\n");
+  process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"large ok",usage:{input_tokens:4,output_tokens:2}}) + "\\n");
+}, 20);`);
+    try {
+        const result = await createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" })(model, { ...context, systemPrompt }, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "stop", result.errorMessage);
+        const captured = JSON.parse(await readFile(join(fake.dir, "captured-large"), "utf8"));
+        assert.equal(captured.bytes, 146_101);
+        assert.ok(captured.head.startsWith("ALPHA-MARKER-4417"), captured.head);
+        assert.ok(captured.tail.endsWith("OMEGA-MARKER-9308"), captured.tail);
+        const flag = captured.argv.indexOf("--system-prompt-file");
+        assert.ok(flag >= 0);
+        assert.ok(captured.argv[flag + 1].endsWith("system-prompt.txt"));
+        assert.ok(captured.argv.every((entry) => !entry.includes("ALPHA-MARKER-4417")));
+        const metrics = await waitForRequestMetrics((entry) => entry.stopReason === "stop");
+        assert.equal(metrics.cleanupComplete, true);
+    }
+    finally {
+        await rm(fake.dir, { recursive: true, force: true });
+    }
+});
+test("provider rejects a system prompt the served model cannot hold", async () => {
+    const systemPrompt = "y".repeat(LARGEST_ADMITTED_SYSTEM_PROMPT_BYTES + 3);
+    const result = await createClaudeStream(DEAD_INSTALLATION)(BUDGET_MODEL, { ...context, systemPrompt }, { reasoning: "medium" }).result();
+    const metrics = await waitForRequestMetrics((entry) => entry.errorCategory === "system_prompt_budget");
+    assert.match(result.errorMessage ?? "", /system prompt alone needs about \d+ tokens/);
+    assert.match(result.errorMessage ?? "", /Reduce loaded system instructions, project context, or skill descriptions/);
+    // Rejected before preparation, so no private directory was ever created and
+    // the estimate that drove the decision is still reported.
+    assert.equal(metrics.lastPhase, "payload_applied");
+    assert.equal(metrics.transcriptBytes, 0);
+    assert.ok(metrics.estimatedInputTokens > 0);
+    assert.equal(metrics.cleanupComplete, true);
+});
+test("the system-prompt precheck admits the boundary and the full budget still decides", async () => {
+    const systemPrompt = "y".repeat(LARGEST_ADMITTED_SYSTEM_PROMPT_BYTES);
+    const result = await createClaudeStream(DEAD_INSTALLATION)(BUDGET_MODEL, { ...context, systemPrompt }, { reasoning: "medium" }).result();
+    const metrics = await waitForRequestMetrics((entry) => entry.errorCategory === "context_budget");
+    // The precheck is necessary, not sufficient: preparation ran, and the
+    // transcript's own bytes then carried the request over the window.
+    assert.equal(metrics.lastPhase, "prepared");
+    assert.match(result.errorMessage ?? "", /context_length_exceeded/);
+});
+test("the system-prompt budget measures bytes rather than characters", async () => {
+    const systemPrompt = "。".repeat(200_000);
+    assert.equal(systemPrompt.length, 200_000);
+    assert.equal(Buffer.byteLength(systemPrompt), 600_000);
+    const result = await createClaudeStream(DEAD_INSTALLATION)(BUDGET_MODEL, { ...context, systemPrompt }, { reasoning: "medium" }).result();
+    await waitForRequestMetrics((entry) => entry.errorCategory === "system_prompt_budget");
+    assert.match(result.errorMessage ?? "", /system prompt alone needs about \d+ tokens/);
+});
+test("budget failures classify correctly for Pi's overflow recovery", async () => {
+    const oversized = await createClaudeStream(DEAD_INSTALLATION)(BUDGET_MODEL, { ...context, systemPrompt: "y".repeat(LARGEST_ADMITTED_SYSTEM_PROMPT_BYTES + 3) }, { reasoning: "medium" }).result();
+    await waitForRequestMetrics((entry) => entry.errorCategory === "system_prompt_budget");
+    const overBudget = await createClaudeStream(DEAD_INSTALLATION)({ ...model, contextWindow: 100, maxTokens: 90 }, context, { reasoning: "medium" }).result();
+    await waitForRequestMetrics((entry) => entry.errorCategory === "context_budget");
+    const asMessage = (result) => ({ stopReason: "error", errorMessage: result.errorMessage ?? "", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
+    // Compaction cannot shrink a system prompt, so the system-only failure must
+    // not look like a recoverable overflow; the transcript one must.
+    assert.equal(isContextOverflow(asMessage(oversized), BUDGET_MODEL.contextWindow), false);
+    assert.equal(isContextOverflow(asMessage(overBudget), 100), true);
+});
+test("provider requires a usable model context window", async () => {
+    for (const contextWindow of [undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+        const candidate = { ...model, contextWindow };
+        if (contextWindow === undefined) delete candidate.contextWindow;
+        const result = await createClaudeStream(DEAD_INSTALLATION)(candidate, context, { reasoning: "medium" }).result();
+        const metrics = await waitForRequestMetrics((entry) => entry.errorCategory === "context_window");
+        assert.match(result.errorMessage ?? "", /reports no usable context window/);
+        assert.match(result.errorMessage ?? "", /contextWindow override/);
+        assert.equal(metrics.lastPhase, "payload_applied");
+    }
+    // Only positivity and finiteness are required: the window is compared and
+    // never propagated, so a fractional Pi override must still run.
+    const fractional = await createClaudeStream(DEAD_INSTALLATION)({ ...model, contextWindow: 1_000_000.5 }, context, { reasoning: "medium" }).result();
+    const metrics = await waitForRequestMetrics((entry) => entry.errorCategory !== "context_window");
+    assert.notEqual(metrics.errorCategory, "context_window");
+    assert.notEqual(metrics.lastPhase, "payload_applied");
+    assert.ok(fractional.errorMessage);
+});
+test("the system-prompt budget is measured after Pi's payload hook", async () => {
+    const oversized = "y".repeat(LARGEST_ADMITTED_SYSTEM_PROMPT_BYTES + 3);
+    const inflated = await createClaudeStream(DEAD_INSTALLATION)(BUDGET_MODEL, context, { reasoning: "medium", onPayload: (payload) => ({ ...payload, systemPrompt: oversized }) }).result();
+    await waitForRequestMetrics((entry) => entry.errorCategory === "system_prompt_budget");
+    assert.match(inflated.errorMessage ?? "", /system prompt alone needs about \d+ tokens/);
+    // The reverse direction proves the caller's own prompt is not what is
+    // measured: a hook that replaces an oversized prompt must let the request run.
+    await createClaudeStream(DEAD_INSTALLATION)(BUDGET_MODEL, { ...context, systemPrompt: oversized }, { reasoning: "medium", onPayload: (payload) => ({ ...payload, systemPrompt: "small" }) }).result();
+    const metrics = await waitForRequestMetrics((entry) => entry.errorCategory !== "system_prompt_budget");
+    assert.notEqual(metrics.errorCategory, "system_prompt_budget");
+    assert.notEqual(metrics.lastPhase, "payload_applied");
 });

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Removed the fixed 120 KiB system prompt ceiling, which refused an ordinary Pi session before Claude was launched and could not be cleared by changing the model or thinking level. Claude Code documents no size limit for `--system-prompt-file`, and the prompt has always reached it by path rather than through the argument vector the flag exists to avoid. A system prompt is now bounded only by the served model's context window, checked before any private request state is created and reported without context-overflow wording, because compaction cannot shrink a system prompt ([#4](https://github.com/chem/pi-claude-code-provider/issues/4)).
+
+### Changed
+
+- A model must now report a usable context window. A missing or non-positive `contextWindow` previously skipped the context-budget check silently, leaving the request unbounded; it now fails with `context_window`. Pi validates this when a custom model is defined but not when a per-model override sets it, so an override is the reachable cause and the message says so. Fractional values are accepted, since the window is only compared.
+
 ## [0.2.0] - 2026-09-05
 
 ### Removed

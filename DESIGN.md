@@ -19,6 +19,8 @@ Validated initialization is the transport's response boundary: capabilities are 
 
 Each request serializes the effective system prompt, messages, and active tools into a versioned semantic transcript. Separate append-stable records preserve model-visible text, reasoning, tool calls, tool results, and images while omitting operational metadata, provider error messages, usage fields, signatures, and UI-only details. Tool-result `isError` state is preserved so historical failures remain meaningful. Historical tool results pair by `toolCallId`.
 
+Two budget checks bound a request against the served model's context window, which the model must report. A system prompt that cannot fit even alone is refused before any private state is created, because nothing later in the request can make room for it; that failure is deliberately not worded as a context overflow, since compacting history cannot shrink a system prompt. The complete estimate over transcript, catalog, images, and system prompt is checked once preparation completes, and is deliberately conservative.
+
 Literal at signs are JSON Unicode-escaped because Claude expands `@path` syntax. Only provider-generated, validated images remain attachment references. Their dynamic reference list follows the append-stable transcript blocks so adding an image does not invalidate the reusable history prefix.
 
 Resending the complete current context keeps branches, compaction, reloads, and provider handoff Pi-authoritative without a second session store. It also adds framing tokens, cannot replay thinking signatures, and is not wire-equivalent to the Messages API. Claude controls prompt-cache keys and retention.

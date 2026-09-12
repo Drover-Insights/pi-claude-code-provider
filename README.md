@@ -101,6 +101,7 @@ Pi packages run with the user's permissions; review the source before installati
 - **Search unavailable:** allow `pi_claude_code_provider_web_search` in Pi's tool filters and check for a name collision.
 - **`pi auth check` reports `provider_not_found`:** that command does not load extensions, so it cannot see any extension-registered provider. Use `/pi-claude-code-provider-doctor` to check readiness.
 - **Tool proposals never arrive, or requests fail with `mcp_startup`:** run `/pi-claude-code-provider-doctor`. It reports the exact bridge argument vector and whether the handshake completed. Raising `PI_CLAUDE_CODE_PROVIDER_MCP_READY_TIMEOUT_MS` only helps when the handshake succeeds but is slow.
+- **A request fails because the system prompt alone exceeds the model's context:** Pi's system prompt carries your project context files and one entry per loaded skill, and compaction never shrinks it. Reduce the loaded context or skills, or select a model with a larger context window. There is no separate size ceiling of the provider's own.
 - **Stale Windows state after an abrupt exit or `process_cleanup` failure:** a cleanup failure deliberately retains its marked directory when Claude process death is uncertain. Stop the relevant Pi and Claude processes, locate the temporary directory (`node -p "require('node:os').tmpdir()"`, or `echo %TEMP%` when Pi is the standalone build and Node is absent), inspect package marker files, and remove only confirmed stale directories.
 
 ## Development and license
