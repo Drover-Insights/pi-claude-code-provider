@@ -36,6 +36,7 @@
     "typecheck": "node scripts/typecheck.js",
     "check": "node scripts/check.js && npm run typecheck",
     "capture:claude-surface": "node scripts/capture-claude-surface.js",
+    "capture:claude-breakpoints": "node scripts/capture-claude-breakpoints.js",
     "test": "node --import ./test/support/register-pi-loader.js --test test/unit/*.test.js",
     "release:check": "npm run check && npm test && node scripts/release-check.js",
     "prepublishOnly": "npm run check && npm test",

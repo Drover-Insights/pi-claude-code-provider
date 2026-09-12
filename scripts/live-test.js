@@ -18,6 +18,9 @@ const full = process.argv.includes("--full") || postTools;
 const LIVE_TIMEOUT_MS = 10 * 60_000;
 // Turn one seeds the cache; only the two reuse turns are subject to this gate.
 const MIN_CACHE_HIT_PERCENT = 80;
+// The gate runs on Sonnet, where Claude Code 2.1.268 moved the breakpoint.
+// Override to re-verify another alias without a scratch copy of this runner.
+const CACHE_MODEL = process.env.PI_CLAUDE_CODE_PROVIDER_CACHE_MODEL ?? "sonnet:low";
 async function runPi(cwd, prompt, extra = [], env = {}) {
     const child = spawnPi([
         "--no-session",
@@ -53,7 +56,7 @@ async function runPi(cwd, prompt, extra = [], env = {}) {
 async function runCacheProbe(cwd) {
     const rpc = openPiRpc(cwd, [
         "--mode", "rpc", "--no-session", "-e", packageRoot,
-        "--provider", "pi-claude-code-provider", "--model", "sonnet:low", "--no-tools",
+        "--provider", "pi-claude-code-provider", "--model", CACHE_MODEL, "--no-tools",
     ], "Pi cache probe");
     let completed = false;
     try {
@@ -99,7 +102,7 @@ async function runCacheProbe(cwd) {
             `turn 3 took ${afterThird - afterSecond}ms (${usageOf(third)})`;
         assert.ok(secondHit >= MIN_CACHE_HIT_PERCENT, `Turn 2 cache hit ${secondHit.toFixed(1)}% was below ${MIN_CACHE_HIT_PERCENT}%; ${timeline}`);
         assert.ok(thirdHit >= MIN_CACHE_HIT_PERCENT, `Turn 3 cache hit ${thirdHit.toFixed(1)}% was below ${MIN_CACHE_HIT_PERCENT}%; ${timeline}`);
-        console.log(`ok - RPC multi-turn cache reuse (turn 2 ${secondHit.toFixed(1)}% hit; turn 3 ${thirdHit.toFixed(1)}% hit; ${timeline})`);
+        console.log(`ok - RPC multi-turn cache reuse on ${CACHE_MODEL} (turn 2 ${secondHit.toFixed(1)}% hit; turn 3 ${thirdHit.toFixed(1)}% hit; ${timeline})`);
         completed = true;
     }
     finally {

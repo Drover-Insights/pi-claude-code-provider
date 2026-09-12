@@ -96,6 +96,28 @@ test("the cache breakpoint marks the last history block and nothing after it", (
     assert.deepEqual(empty.prompt, []);
 });
 
+test("the transport can never violate the cache breakpoint budget or ordering", () => {
+    // Four breakpoints is the API maximum and a fifth is rejected outright, so
+    // the provider must contribute at most one however long the history is.
+    // Ordering is longest-TTL-first, and Claude Code places a 1h marker after
+    // ours, so ours may never be shorter. Both invariants are properties of what
+    // the provider emits; that Claude Code preserves them on the wire is what
+    // npm run capture:claude-breakpoints checks, and a unit test cannot.
+    const prepared = {
+        directory: "/tmp/private",
+        transcriptBlocks: Array.from({ length: 40 }, (_, index) => `{"record":${index}}`),
+        attachmentPaths: ["/tmp/private/a.png", "/tmp/private/b.png"],
+        systemPromptPath: "/tmp/private/system-prompt.txt",
+        toolNames: new Map(),
+        transcriptBytes: 1,
+        catalogBytes: 0,
+        imageBytes: 1,
+    };
+    const { prompt } = providerArgs(prepared, "opus", "max");
+    const ttls = prompt.flatMap((block) => (block.cache_control ? [block.cache_control.ttl] : []));
+    assert.deepEqual(ttls, ["1h"]);
+});
+
 test("proposal MCP server launches the bridge through the hosting runtime", () => {
     const prepared = {
         directory: "/tmp/private",

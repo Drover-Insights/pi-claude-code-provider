@@ -19,8 +19,11 @@ export const BRIDGE_PATH = fileURLToPath(new URL("../bridge/mcp-proposal-server.
 // API requires breakpoints in longest-TTL-first order, and Claude Code's own
 // markers, including the one it now places after this one, are all 1h. Earlier
 // builds normalize the field away and keep only their own marker, so this is inert
-// there rather than version-gated. Haiku 4.5 is not helped, because it receives the
-// same appended content ahead of the transcript, which no marker placement reaches.
+// there rather than version-gated. 1h also doubles the cache-write premium over the
+// five-minute default; that cost is accepted because the ordering rule leaves no
+// choice, not because the longer lifetime is wanted. Haiku 4.5 is not helped: it
+// receives the same appended content ahead of the transcript, which no marker
+// placement reaches.
 const TRANSCRIPT_CACHE_CONTROL = { type: "ephemeral", ttl: "1h" } as const;
 
 interface PromptBlock {
@@ -71,8 +74,11 @@ export function providerArgs(
   const imageInstruction = imageRefs
     ? ` Generated image attachments for image_attachment blocks: ${imageRefs}.`
     : "";
-  // Keep the growing attachment list after unchanged history, and outside the
-  // breakpoint, so adding an image does not invalidate the cached transcript.
+  // Keep the growing attachment list after unchanged history and outside the
+  // breakpoint, so adding an image cannot invalidate the prefix this provider
+  // caches. That does not make an image-bearing request cacheable: Claude Code
+  // narrates its own attachment read, private directory included, ahead of the
+  // transcript, where nothing the provider places can reach it.
   const lastHistoryBlock = prepared.transcriptBlocks.length - 1;
   const prompt: PromptBlock[] = [
     ...prepared.transcriptBlocks.map((text, index) => ({

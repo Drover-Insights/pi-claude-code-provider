@@ -4,9 +4,13 @@
 
 ### Fixed
 
-- Restore prompt-cache reuse broken by Claude Code 2.1.268, which moved the final `cache_control` marker off the replayed transcript and onto content it appends after it, so every turn rewrote the whole history instead of reading it back. No flag or setting restores it. The transport now marks the last history block itself, measured at 97.1% and 96.8% reuse on turns 2 and 3 against 0.0% before. Earlier builds normalize the marker away, so the verified baseline is unaffected. Haiku 4.5 receives the same content ahead of the transcript instead and is not recovered.
+- Restore prompt-cache reuse broken by Claude Code 2.1.268, which moved the final `cache_control` marker off the replayed transcript and onto content it appends after it, so every turn rewrote the whole history instead of reading it back. No flag or setting restores it. The transport now marks the last history block itself, measured at 97.1% and 96.8% reuse on turns 2 and 3 against 0.0% before. Earlier builds normalize the marker away, so the verified baseline is unaffected. Sonnet, Opus and Fable recover; Haiku 4.5 receives the same content ahead of the transcript instead and does not.
 
 - Removed the fixed 120 KiB system prompt ceiling, which refused an ordinary Pi session before Claude was launched and could not be cleared by changing the model or thinking level. Claude Code documents no size limit for `--system-prompt-file`, and the prompt has always reached it by path rather than through the argument vector the flag exists to avoid. A system prompt is now bounded only by the served model's context window, checked before any private request state is created and reported without context-overflow wording, because compaction cannot shrink a system prompt ([#4](https://github.com/chem/pi-claude-code-provider/issues/4)).
+
+### Added
+
+- `npm run capture:claude-breakpoints` reports where Claude Code places prompt-cache breakpoints in the request this provider builds, using the provider's own arguments against a loopback server. It spends no quota, takes two captures so a per-request varying prefix is visible at all, and exits non-zero unless the shape can actually be reused.
 
 ### Changed
 
