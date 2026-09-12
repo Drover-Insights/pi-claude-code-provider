@@ -8,15 +8,29 @@
 
 - Removed the fixed 120 KiB system prompt ceiling, which refused an ordinary Pi session before Claude was launched and could not be cleared by changing the model or thinking level. Claude Code documents no size limit for `--system-prompt-file`, and the prompt has always reached it by path rather than through the argument vector the flag exists to avoid. A system prompt is now bounded only by the served model's context window, checked before any private request state is created and reported without context-overflow wording, because compaction cannot shrink a system prompt ([#4](https://github.com/chem/pi-claude-code-provider/issues/4)).
 
+- Pi tools whose names contain characters other than letters, digits, `_`, and `-`, such as `.`, no longer fail every request with `isolation_tools`. Claude Code replaces those characters when it names an MCP tool, so such names now receive a digest alias instead of being preserved.
+
+- Streaming a large tool call no longer re-parses its whole argument string on every delta, which cost time quadratic in the argument size and could stall Pi while a large `write` arrived. Partial arguments are previewed with Pi's streaming JSON parser at geometrically spaced points, and previews now show partial values instead of staying empty until the call completes.
+
+- A rate-limit warning is reported once per session per displayed text. Utilization changes by fractions between events while the notice shows whole percent, so identical-looking warnings previously repeated on every tool round trip.
+
+- Web search no longer requests partial messages it discards, which counted toward its 2 MiB capture limit.
+
+- Error messages carry at most a 1,000-character tail of Claude Code's stderr with the private request directory replaced, instead of up to 64 KiB of raw stderr. For web search that message reaches the model as a tool result.
+
 ### Added
 
 - `npm run capture:claude-breakpoints` reports where Claude Code places prompt-cache breakpoints in the request this provider builds, using the provider's own arguments against a loopback server. It spends no quota, takes two captures so a per-request varying prefix is visible at all, and exits non-zero unless the shape can actually be reused.
+- `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT=off` drops the provider's own prompt-cache breakpoint. Every Claude 5 alias already carries the API's maximum of four, so a Claude Code release that adds one would fail every request; the provider now recognizes that rejection, names the setting in the error, and records `cache_breakpoint_limit`.
+- Claude processes receive `CLAUDE_CONFIG_DIR` and `NODE_EXTRA_CA_CERTS` when set, so a relocated Claude Code configuration and a TLS-inspecting proxy's CA bundle work. Logins through `CLAUDE_CODE_OAUTH_TOKEN` remain unsupported.
 
 ### Changed
 
 - A model must now report a usable context window. A missing or non-positive `contextWindow` previously skipped the context-budget check silently, leaving the request unbounded; it now fails with `context_window`. Pi validates this when a custom model is defined but not when a per-model override sets it, so an override is the reachable cause and the message says so. Fractional values are accepted, since the window is only compared.
 - Malformed messages, content blocks, and tools in a request context now fail with transcript preparation's `content_shape`, `content_type`, or image error categories instead of `payload_invalid`, which remains for a payload with an invalid top-level shape. Two layers previously checked the same rules.
 - Web-search rate-limit rejections now include the overage-disabled reason, matching provider requests.
+- Only images from the current user turn, meaning the latest user message and the tool results after it, are attached to a request. Any attachment makes a request uncached, so an image anywhere in history previously disabled prompt caching for the rest of the branch. Earlier images keep their transcript records but are no longer shown to Claude, and no longer count toward the per-request image limits. The context protocol is now `pi-claude-code-provider-context-v4`, so the first request after upgrading does not reuse an earlier cache entry.
+- `/pi-claude-code-provider-doctor` prints one labeled fact per line.
 
 ## [0.2.0] - 2026-09-05
 

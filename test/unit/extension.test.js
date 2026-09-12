@@ -232,6 +232,39 @@ test("reports a repeated rate-limit warning once per session", async () => {
     }
 });
 
+test("reports one warning while utilization moves within the displayed percent", async () => {
+    // Utilization arrives as a changing fraction; the notice shows whole percent.
+    const warning = (utilization) => ({ status: "allowed_warning", rateLimitType: "five_hour", utilization, resetsAt: 1_800_000_000 });
+    const { directory, executable } = await createFakeClaude("ok", { rateLimitInfo: [warning(0.871), warning(0.874)] });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await piClaudeCodeProvider(pi.api);
+        const provider = pi.providers.get("pi-claude-code-provider");
+        const configured = provider.models.find((model) => model.id === "sonnet");
+        const model = {
+            ...configured,
+            provider: "pi-claude-code-provider",
+            api: "pi-claude-code-provider-headless",
+            baseUrl: "pi-claude-code-provider://local",
+        };
+        const notices = [];
+        pi.handlers.get("session_start")[0]({}, { ui: { notify(message, level) { notices.push({ message, level }); } } });
+        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+        await provider.streamSimple(model, context, { reasoning: "medium" }).result();
+        assert.deepEqual(notices.filter(({ message }) => message.includes("rate limit")).map(({ message }) => message), [
+            `[pi-claude-code-provider] Claude rate limit warning: 87% used (five_hour); resets at ${new Date(1_800_000_000_000).toLocaleString()}`,
+        ]);
+        await pi.handlers.get("session_shutdown")[0]({}, {});
+    }
+    finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
 test("converts fractional weekly utilization to a percentage", async () => {
     const { directory, executable } = await createFakeClaude("ok", { rateLimitInfo: {
         status: "allowed_warning",

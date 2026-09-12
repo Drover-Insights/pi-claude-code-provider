@@ -129,18 +129,26 @@ export function formatDoctorSummary(input: DoctorSummaryInput): string {
     metrics && reportedPromptTokens > 0
       ? `reported usage: ${metrics.inputTokens} input, ${metrics.cacheRead} cache read, ${metrics.cacheWrite} cache write${metrics.cacheHitPercent === undefined ? "" : `, ${metrics.cacheHitPercent}% cache hit`}`
       : "reported token usage unavailable";
-  const requestSummary = metrics
-    ? `; last request: ${metrics.requestedModel}/${metrics.effort}, ${metrics.messageCount} messages, ${metrics.estimatedInputTokens} estimated transport tokens, ${reportedUsage}, ${metrics.durationMs ?? 0}ms, ${metrics.stopReason ?? "unknown"}${metrics.errorCategory ? ` (${metrics.errorCategory})` : ""}${metrics.cleanupComplete ? "" : ", cleanup incomplete"}`
-    : "; no request metrics recorded yet";
-  const metricsLogSummary = input.metricsLogError ? `; metrics log error: ${input.metricsLogError}` : "";
-  const cleanupSummary = input.runtimeCleanup.removed > 0 || input.runtimeCleanup.failures > 0
-    ? `; stale runtime cleanup: ${input.runtimeCleanup.removed} removed, ${input.runtimeCleanup.failures} ${input.runtimeCleanup.failures === 1 ? "failure" : "failures"}`
-    : "";
-  const bridgeSummary = input.bridgeProbe
-    ? `; bridge ${input.bridgeProbe.ok ? "ok" : "BROKEN"} via ${formatBridgeArgv(input.bridgeProbe.argv)} (${input.bridgeProbe.detail})`
-    : "";
+  // One labeled fact per line: this is read in a notification, not parsed.
+  const lines = [
+    verification,
+    `Runtime: ${hostRuntimeDescription()}`,
+    `Claude: ${input.installation.executable} (${input.installation.subscriptionType} subscription)`,
+    `Models: ${input.modelIds.join(", ")}`,
+  ];
   const servedModels = formatServedModels(input);
-  return `${verification}; runtime ${hostRuntimeDescription()}; Claude at ${input.installation.executable}; ${input.installation.subscriptionType} subscription; models: ${input.modelIds.join(", ")}${servedModels}${bridgeSummary}${requestSummary}${metricsLogSummary}${cleanupSummary}`;
+  if (servedModels) lines.push(`Served models (Claude Code install): ${servedModels}`);
+  if (input.bridgeProbe) {
+    lines.push(`Bridge: ${input.bridgeProbe.ok ? "ok" : "BROKEN"} via ${formatBridgeArgv(input.bridgeProbe.argv)} (${input.bridgeProbe.detail})`);
+  }
+  lines.push(metrics
+    ? `Last request: ${metrics.requestedModel}/${metrics.effort}, ${metrics.messageCount} messages, ${metrics.estimatedInputTokens} estimated transport tokens, ${reportedUsage}, ${metrics.durationMs ?? 0}ms, ${metrics.stopReason ?? "unknown"}${metrics.errorCategory ? ` (${metrics.errorCategory})` : ""}${metrics.cleanupComplete ? "" : ", cleanup incomplete"}`
+    : "Last request: no request metrics recorded yet");
+  if (input.metricsLogError) lines.push(`Metrics log error: ${input.metricsLogError}`);
+  if (input.runtimeCleanup.removed > 0 || input.runtimeCleanup.failures > 0) {
+    lines.push(`Stale runtime cleanup: ${input.runtimeCleanup.removed} removed, ${input.runtimeCleanup.failures} ${input.runtimeCleanup.failures === 1 ? "failure" : "failures"}`);
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -161,5 +169,5 @@ function formatServedModels(input: DoctorSummaryInput): string {
       : "";
     return `${alias} ${model}${caveat}`;
   });
-  return `; models (Claude Code install): ${entries.join(", ")}`;
+  return entries.join(", ");
 }

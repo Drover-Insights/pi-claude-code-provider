@@ -20,8 +20,6 @@ dist/
 *.swo
 *~
 .pi/
-.pi-subagents/
-.ralph/
 .claude/settings.local.json
 .DS_Store
 Thumbs.db

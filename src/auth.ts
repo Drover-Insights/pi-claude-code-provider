@@ -182,12 +182,16 @@ const ALLOWED_ENVIRONMENT = [
   "LC_ALL",
   "LC_CTYPE",
   "TMPDIR",
+  // A relocated Claude Code configuration directory holds the login to use.
+  "CLAUDE_CONFIG_DIR",
   "HTTP_PROXY",
   "HTTPS_PROXY",
   "NO_PROXY",
   "http_proxy",
   "https_proxy",
   "no_proxy",
+  // The extra CA bundle a TLS-inspecting proxy requires.
+  "NODE_EXTRA_CA_CERTS",
 ] as const;
 
 export function buildClaudeEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {

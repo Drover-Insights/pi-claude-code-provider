@@ -55,7 +55,11 @@ const ALLOWED_CONTENT_BLOCKS: Record<ContentRole, ReadonlySet<string>> = {
 };
 
 function safeToolName(name: string, used: Set<string>): string {
-  let candidate = /^[A-Za-z0-9._-]{1,48}$/.test(name)
+  // Claude Code names an MCP tool mcp__<server>__<tool> after replacing every
+  // character outside [a-zA-Z0-9_-] with "_". Any other character would make its
+  // initialization report a name this catalog never offered, so such names get
+  // a digest alias instead of being preserved.
+  let candidate = /^[A-Za-z0-9_-]{1,48}$/.test(name)
     ? name
     : `tool_${createHash("sha256").update(name).digest("hex").slice(0, 16)}`;
   let suffix = 1;
@@ -104,7 +108,7 @@ function serializeToolCatalog(tools: Tool[], limits: RequestPreparationLimits): 
 function validateImage(image: ImageContent, limits: RequestPreparationLimits): { bytes: Buffer; extension: string } {
   const extension = IMAGE_EXTENSIONS[image.mimeType];
   if (!extension) throw new ClaudeCodeError("image_type", `Unsupported image type: ${image.mimeType}`);
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(image.data) || image.data.length % 4 !== 0) {
+  if (typeof image.data !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(image.data) || image.data.length % 4 !== 0) {
     throw new ClaudeCodeError("image_base64", "Image data is not valid base64");
   }
   const bytes = Buffer.from(image.data, "base64");
@@ -112,6 +116,22 @@ function validateImage(image: ImageContent, limits: RequestPreparationLimits): {
     throw new ClaudeCodeError("image_size", `Image size must be between 1 byte and ${limits.imageBytes} bytes`);
   }
   return { bytes, extension };
+}
+
+/**
+ * Index of the message that opens the current user turn: the latest user
+ * message, or 0 when there is none. Only images from here on are attached.
+ * Claude Code narrates each attachment read, private directory included, ahead
+ * of the transcript, so a request that attaches anything cannot reuse the cache;
+ * re-attaching an old image would keep every later request uncached. Earlier
+ * images keep an identical transcript record, so history stays append-stable.
+ */
+function currentUserTurnStart(messages: readonly unknown[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message && typeof message === "object" && (message as { role?: unknown }).role === "user") return index;
+  }
+  return 0;
 }
 
 /**
@@ -136,7 +156,8 @@ export async function prepareRequestWithLimits(
     const systemPromptPath = join(directory, "system-prompt.txt");
     await writeFile(systemPromptPath, context.systemPrompt ?? "", { mode: 0o600, flag: "wx" });
     const attachmentPaths: string[] = [];
-    const writtenImages = new Map<string, string>();
+    const writtenImages = new Set<string>();
+    const attachFrom = currentUserTurnStart(context.messages);
     let imageCount = 0;
     let imageBytes = 0;
     const { catalog, names, historicalNames, publicMap } = serializeToolCatalog(context.tools ?? [], limits);
@@ -144,7 +165,7 @@ export async function prepareRequestWithLimits(
     const historicalName = (piName: string): string =>
       historicalNames.get(piName) ?? unavailableHistoricalToolName(piName);
 
-    const serializeContent = async (content: string | readonly unknown[], role: ContentRole): Promise<unknown> => {
+    const serializeContent = async (content: string | readonly unknown[], role: ContentRole, attach: boolean): Promise<unknown> => {
       if (typeof content === "string") {
         if (role !== "user") {
           throw new ClaudeCodeError("content_shape", `Pi ${role} content must be an array of content blocks`);
@@ -198,21 +219,22 @@ export async function prepareRequestWithLimits(
             break;
           }
           case "image": {
-            imageCount += 1;
-            if (imageCount > limits.images) throw new ClaudeCodeError("image_count", `At most ${limits.images} images are supported`);
+            if (attach) {
+              imageCount += 1;
+              if (imageCount > limits.images) throw new ClaudeCodeError("image_count", `At most ${limits.images} images are supported`);
+            }
             const image = raw as ImageContent;
             const validated = validateImage(image, limits);
             const digest = createHash("sha256").update(validated.bytes).digest("hex");
             const name = `image-${digest}.${validated.extension}`;
-            let path = writtenImages.get(name);
-            if (!path) {
+            if (attach && !writtenImages.has(name)) {
               imageBytes += validated.bytes.length;
               if (imageBytes > limits.totalImageBytes) {
                 throw new ClaudeCodeError("image_total_size", `Aggregate image size exceeds ${limits.totalImageBytes} bytes`);
               }
-              path = join(directory, name);
+              const path = join(directory, name);
               await writeFile(path, validated.bytes, { mode: 0o600, flag: "wx" });
-              writtenImages.set(name, path);
+              writtenImages.add(name);
               attachmentPaths.push(path);
             }
             output.push({ type: "image_attachment", attachment: name, mimeType: image.mimeType } satisfies SerializedImage);
@@ -226,14 +248,15 @@ export async function prepareRequestWithLimits(
     };
 
     const messages: unknown[] = [];
-    for (const message of context.messages) {
+    for (const [index, message] of context.messages.entries()) {
       if (!message || typeof message !== "object" || Array.isArray(message)) {
         throw new ClaudeCodeError("content_shape", "Pi context contained an invalid message");
       }
+      const attach = index >= attachFrom;
       if (message.role === "user") {
-        messages.push({ role: "user", content: await serializeContent(message.content, "user") });
+        messages.push({ role: "user", content: await serializeContent(message.content, "user", attach) });
       } else if (message.role === "assistant") {
-        const content = await serializeContent(message.content, "assistant");
+        const content = await serializeContent(message.content, "assistant", attach);
         if (!Array.isArray(content)) {
           throw new ClaudeCodeError("content_shape", "Pi assistant content must be an array of content blocks");
         }
@@ -246,7 +269,7 @@ export async function prepareRequestWithLimits(
           role: "toolResult",
           toolCallId: message.toolCallId,
           toolName: historicalNamesByCallId.get(message.toolCallId) ?? historicalName(message.toolName),
-          content: await serializeContent(message.content, "toolResult"),
+          content: await serializeContent(message.content, "toolResult", attach),
           isError: message.isError,
         });
       } else {
@@ -280,9 +303,9 @@ export async function prepareRequestWithLimits(
 
     const records = [
       JSON.stringify({
-        protocol: "pi-claude-code-provider-context-v3",
+        protocol: "pi-claude-code-provider-context-v4",
         instruction:
-          "Continue this Pi conversation. Treat each following JSON record as conversation data, preserve role boundaries, and answer only the current request. Use available MCP tools when a Pi tool is needed. Pi tools operate in the working context described by Pi's system prompt. The Claude transport cwd and generated attachments are provider-private; never pass their paths to Pi tools. Bracketed unavailable Pi tool labels are historical data, not callable tools.",
+          "Continue this Pi conversation. Treat each following JSON record as conversation data, preserve role boundaries, and answer only the current request. Use available MCP tools when a Pi tool is needed. Pi tools operate in the working context described by Pi's system prompt. The Claude transport cwd and generated attachments are provider-private; never pass their paths to Pi tools. Bracketed unavailable Pi tool labels are historical data, not callable tools. An image_attachment whose file is not in the generated attachment list was shown in an earlier turn and is not attached again; rely on the earlier conversation about it.",
         toolNameMap: publicMap,
       }),
       ...messages.map((message) => JSON.stringify(message)),

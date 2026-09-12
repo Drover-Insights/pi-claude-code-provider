@@ -57,6 +57,24 @@ test("builds an allowlisted Claude environment", () => {
         }
     }
 });
+test("forwards a relocated Claude configuration and an extra CA bundle", () => {
+    const forwarded = { CLAUDE_CONFIG_DIR: "/custom/claude-config", NODE_EXTRA_CA_CERTS: "/custom/corporate-ca.pem" };
+    const originals = Object.fromEntries(Object.keys(forwarded).map((name) => [name, process.env[name]]));
+    Object.assign(process.env, forwarded);
+    try {
+        const env = buildClaudeEnvironment();
+        for (const [name, value] of Object.entries(forwarded))
+            assert.equal(env[name], value);
+    }
+    finally {
+        for (const [name, value] of Object.entries(originals)) {
+            if (value === undefined)
+                delete process.env[name];
+            else
+                process.env[name] = value;
+        }
+    }
+});
 test("requires the Claude Code headless command surface", () => {
     // Every assertion runs against help the CLI really emitted, so a spelling
     // this project assumes but Claude Code never produces cannot pass here.

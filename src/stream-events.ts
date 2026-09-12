@@ -1,8 +1,12 @@
+import { parseStreamingJson } from "@earendil-works/pi-ai";
 import type { AssistantMessageEventStream, ToolCall } from "@earendil-works/pi-ai";
+import { TRANSCRIPT_BREAKPOINT_ENV } from "./claude-args.ts";
 import { ClaudeCodeError } from "./errors.ts";
 import {
+  isCacheBreakpointLimit,
   parseRateLimitNotice,
   rateLimitRejectionMessage,
+  requireRecord,
   terminalResultErrorDetail,
   validateClaudeInitialization,
   type RateLimitNoticeSink,
@@ -52,6 +56,8 @@ interface IndexedBlock {
   // position in output.content so mixed responses update the correct Pi block.
   contentIndex: number;
   partialJson?: string;
+  /** Length of partialJson when its preview was last parsed. */
+  parsedLength?: number;
 }
 
 export type ClaudeTerminationCause = "none" | "tool_handoff" | "caller_abort";
@@ -68,6 +74,7 @@ export class ClaudeEventMapper {
   private successfulResult: "stop" | "length" | undefined;
   private stopReason: string | undefined;
   private rejectedRateLimit: string | undefined;
+  private breakpointLimitRejected = false;
   private servedContextWindow: number | undefined;
   private servedMaxOutputTokens: number | undefined;
   private readonly stream: AssistantMessageEventStream;
@@ -109,6 +116,11 @@ export class ClaudeEventMapper {
 
   get rateLimitFailure(): string | undefined {
     return this.rejectedRateLimit;
+  }
+
+  /** Whether the API rejected the request for carrying too many cache breakpoints. */
+  get cacheBreakpointLimit(): boolean {
+    return this.breakpointLimitRejected;
   }
 
   /** Wait for an asynchronous response observer before mapping Claude's response body. */
@@ -187,7 +199,7 @@ export class ClaudeEventMapper {
     const type = event.type;
     if (type === "message_start") {
       if (this.messageStarted) throw new ClaudeCodeError("protocol_message", "Claude emitted duplicate message_start");
-      const message = object(event.message, "message_start.message");
+      const message = requireRecord(event.message, "message_start.message");
       if (typeof message.model === "string") this.output.responseModel = message.model;
       if (typeof message.id === "string") this.output.responseId = message.id;
       this.applyUsage(message.usage);
@@ -209,7 +221,7 @@ export class ClaudeEventMapper {
   }
 
   private acceptMessageDelta(event: Record<string, unknown>): void {
-    const delta = object(event.delta, "message_delta.delta");
+    const delta = requireRecord(event.delta, "message_delta.delta");
     if (delta.stop_reason !== null && delta.stop_reason !== undefined) {
       this.stopReason = stopReason(delta.stop_reason);
     }
@@ -220,9 +232,9 @@ export class ClaudeEventMapper {
   private startBlock(event: Record<string, unknown>): void {
     const sourceIndex = index(event.index);
     if (this.blocks.has(sourceIndex)) throw new ClaudeCodeError("protocol_blocks", `Duplicate content block index ${sourceIndex}`);
-    const source = object(event.content_block, "content_block_start.content_block");
+    const source = requireRecord(event.content_block, "content_block_start.content_block");
     const contentIndex = this.output.content.length;
-    this.blocks.set(sourceIndex, { contentIndex, partialJson: "" });
+    this.blocks.set(sourceIndex, { contentIndex, partialJson: "", parsedLength: 0 });
     if (source.type === "text") {
       this.output.content.push({ type: "text", text: typeof source.text === "string" ? source.text : "" });
       this.stream.push({ type: "text_start", contentIndex, partial: this.output });
@@ -265,7 +277,7 @@ export class ClaudeEventMapper {
     const sourceIndex = index(event.index);
     const indexed = this.blocks.get(sourceIndex);
     if (!indexed) throw new ClaudeCodeError("protocol_blocks", `Delta for unknown content block ${sourceIndex}`);
-    const delta = object(event.delta, "content_block_delta.delta");
+    const delta = requireRecord(event.delta, "content_block_delta.delta");
     const block = this.output.content[indexed.contentIndex];
     if (delta.type === "text_delta" && block?.type === "text" && typeof delta.text === "string") {
       block.text += delta.text;
@@ -276,11 +288,15 @@ export class ClaudeEventMapper {
     } else if (delta.type === "signature_delta" && block?.type === "thinking" && typeof delta.signature === "string") {
       block.thinkingSignature = `${block.thinkingSignature ?? ""}${delta.signature}`;
     } else if (delta.type === "input_json_delta" && block?.type === "toolCall" && typeof delta.partial_json === "string") {
-      indexed.partialJson = `${indexed.partialJson ?? ""}${delta.partial_json}`;
-      try {
-        block.arguments = JSON.parse(indexed.partialJson) as Record<string, unknown>;
-      } catch {
-        // Partial JSON is expected until content_block_stop.
+      const partialJson = `${indexed.partialJson ?? ""}${delta.partial_json}`;
+      indexed.partialJson = partialJson;
+      if (argumentPreviewDue(partialJson.length, indexed.parsedLength ?? 0)) {
+        indexed.parsedLength = partialJson.length;
+        // A preview only; content_block_stop parses the complete arguments strictly.
+        const preview = parseStreamingJson<unknown>(partialJson);
+        if (preview && typeof preview === "object" && !Array.isArray(preview)) {
+          block.arguments = preview as Record<string, unknown>;
+        }
       }
       this.stream.push({ type: "toolcall_delta", contentIndex: indexed.contentIndex, delta: delta.partial_json, partial: this.output });
     } else {
@@ -331,7 +347,14 @@ export class ClaudeEventMapper {
       const status = typeof record.api_error_status === "number" && Number.isFinite(record.api_error_status)
         ? ` (${record.api_error_status})`
         : "";
-      this.fail(`Claude Code request failed${status}: ${terminalResultErrorDetail(record as Record<string, unknown>, this.assistantDiagnostic, this.rejectedRateLimit)}`);
+      let detail = terminalResultErrorDetail(record as Record<string, unknown>, this.assistantDiagnostic, this.rejectedRateLimit);
+      if (isCacheBreakpointLimit(detail)) {
+        this.breakpointLimitRejected = true;
+        detail += `; Claude Code placed more prompt-cache breakpoints than the API allows. Restart Pi with ` +
+          `${TRANSCRIPT_BREAKPOINT_ENV}=off to drop this provider's transcript breakpoint (prompt caching is lost ` +
+          `while it is off) and report your Claude Code version`;
+      }
+      this.fail(`Claude Code request failed${status}: ${detail}`);
       return;
     }
     if (record.stop_reason !== null && record.stop_reason !== undefined && this.stopReason === undefined) {
@@ -481,9 +504,13 @@ function isPromise(value: unknown): value is PromiseLike<void> {
   return typeof value === "object" && value !== null && typeof (value as { then?: unknown }).then === "function";
 }
 
-function object(value: unknown, field: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new ClaudeCodeError("protocol_shape", `${field} must be an object`);
-  }
-  return value as Record<string, unknown>;
+/**
+ * Whether streamed tool arguments are due for another preview parse. Each parse
+ * rescans the whole string, so parsing on every delta costs time quadratic in
+ * the argument size. Waiting until the string has grown by a quarter since the
+ * last parse keeps the total work a constant multiple of the final size; the
+ * floor keeps small arguments previewing promptly. Exported for tests.
+ */
+export function argumentPreviewDue(receivedLength: number, parsedLength: number): boolean {
+  return receivedLength - parsedLength >= Math.max(64, parsedLength / 4);
 }

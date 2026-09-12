@@ -133,7 +133,7 @@ test("doctor names the model each alias would be served, or says it cannot", () 
     assert.doesNotMatch(formatDoctorSummary(base), /Claude Code install/);
     const versions = { sonnet: "claude-sonnet-5", fable: "claude-fable-5-1", opus: "claude-opus-5", haiku: "claude-haiku-4-5" };
     const pro = formatDoctorSummary({ ...base, modelVersions: versions });
-    assert.match(pro, /models \(Claude Code install\): sonnet claude-sonnet-5, fable claude-fable-5-1 \(Pro: requires usage credits enabled\), opus claude-opus-5, haiku claude-haiku-4-5/);
+    assert.match(pro, /^Served models \(Claude Code install\): sonnet claude-sonnet-5, fable claude-fable-5-1 \(Pro: requires usage credits enabled\), opus claude-opus-5, haiku claude-haiku-4-5$/m);
     // The caveat is about entitlement, not detection: auth status exposes no
     // credit field, so the wording must not claim to know either way.
     assert.doesNotMatch(pro, /credits (?:are|enabled and|disabled)/);
@@ -152,10 +152,32 @@ test("doctor summary handles absent, successful, and failed request diagnostics"
     assert.match(formatDoctorSummary({ ...base, metrics: { ...metrics, inputTokens: 0, cacheRead: 0, cacheWrite: 0, cacheHitPercent: undefined } }), /reported token usage unavailable/);
     const failed = formatDoctorSummary({ ...base, metrics: { ...metrics, stopReason: "error", errorCategory: "protocol" } });
     assert.match(failed, /error \(protocol\)/);
-    assert.match(formatDoctorSummary({ ...base, metricsLogError: "EACCES" }), /metrics log error: EACCES/);
-    assert.match(formatDoctorSummary({ ...base, runtimeCleanup: { removed: 2, failures: 1 } }), /stale runtime cleanup: 2 removed, 1 failure/);
+    assert.match(formatDoctorSummary({ ...base, metricsLogError: "EACCES" }), /^Metrics log error: EACCES$/m);
+    assert.match(formatDoctorSummary({ ...base, runtimeCleanup: { removed: 2, failures: 1 } }), /^Stale runtime cleanup: 2 removed, 1 failure$/m);
     assert.match(formatDoctorSummary({ ...base, metrics: { ...metrics, cleanupComplete: false, errorCategory: "process_cleanup" } }), /process_cleanup.*cleanup incomplete/);
     assert.doesNotMatch(failed, /prompt|secret|pi-claude-code-provider-/i);
+});
+
+test("doctor summary puts one labeled fact on each line", () => {
+    const lines = formatDoctorSummary({ ...doctorBase(), metrics, metricsLogError: "EACCES" }).split("\n");
+    assert.equal(lines[0], "Platform linux/x64 (verified); Pi 1 (verified); Claude Code 2 (unverified; tested 1)");
+    assert.deepEqual(lines.slice(1).map((line) => line.slice(0, line.indexOf(":"))), ["Runtime", "Claude", "Models", "Last request", "Metrics log error"]);
+    assert.equal(lines[2], "Claude: /usr/bin/claude (pro subscription)");
+});
+
+test("the diagnostic report records whether the transcript breakpoint is disabled", async () => {
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT;
+    process.env.PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT = "off";
+    let path;
+    try {
+        path = await writeDiagnosticReport(doctorBase());
+        assert.equal(JSON.parse(await readFile(path, "utf8")).overrides.transcriptBreakpointDisabled, true);
+    }
+    finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT = original;
+        if (path) await rm(dirname(path), { recursive: true, force: true });
+    }
 });
 
 test("diagnostic reports are bounded, private, redacted, and content-free", async () => {
@@ -194,13 +216,13 @@ test("the doctor completes a real bridge handshake under the hosting runtime", a
     // A version or path check passes on an install whose bridge can never start,
     // so the summary must surface the handshake result and the resolved command.
     const summary = formatDoctorSummary({ ...doctorBase(), bridgeProbe: probe });
-    assert.match(summary, /bridge ok via /);
-    assert.match(summary, new RegExp(`runtime ${process.versions.bun ? "Bun" : "Node"} `));
+    assert.match(summary, /^Bridge: ok via /m);
+    assert.match(summary, new RegExp(`^Runtime: ${process.versions.bun ? "Bun" : "Node"} `, "m"));
     const broken = formatDoctorSummary({
         ...doctorBase(),
         bridgeProbe: { ok: false, argv: probe.argv, detail: "handshake failed (no tools/list result, ready marker missing)" },
     });
-    assert.match(broken, /bridge BROKEN via .*ready marker missing/);
+    assert.match(broken, /^Bridge: BROKEN via .*ready marker missing\)\)$/m);
 });
 
 test("the diagnostic report records the distribution that decides bridge launching", async () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BRIDGE_PATH, baseClaudeArgs, providerArgs } from "../../src/claude-args.ts";
+import { BRIDGE_PATH, baseClaudeArgs, providerArgs, transcriptBreakpointEnabled } from "../../src/claude-args.ts";
 import { NEUTRAL_BUN_CONFIG, needsBunConfig, scriptLaunch } from "../../src/host-runtime.ts";
 test("uses only generated attachment references and replacement prompt", () => {
     const prepared = {
@@ -77,6 +77,27 @@ test("marks exactly the last history block with a 1h cache breakpoint", () => {
     assert.equal(prompt.at(-1).cache_control, undefined);
     // An empty history has nothing to mark; a marker with no block is invalid.
     assert.deepEqual(providerArgs({ ...prepared, transcriptBlocks: [], attachmentPaths: [] }, "sonnet", "low").prompt, []);
+});
+
+test("the transcript breakpoint turns off only through a valid setting", () => {
+    const prepared = {
+        directory: "/tmp/private",
+        transcriptBlocks: ['{"record":0}', '{"record":1}'],
+        attachmentPaths: [],
+        systemPromptPath: "/tmp/private/system-prompt.txt",
+        toolNames: new Map(),
+        transcriptBytes: 1,
+        catalogBytes: 0,
+        imageBytes: 0,
+    };
+    const { prompt } = providerArgs(prepared, "sonnet", "low", { transcriptBreakpoint: false });
+    assert.equal(prompt.length, 2);
+    assert.equal(prompt.some((block) => "cache_control" in block), false);
+    const name = "PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT";
+    assert.equal(transcriptBreakpointEnabled({}), true);
+    assert.equal(transcriptBreakpointEnabled({ [name]: "on" }), true);
+    assert.equal(transcriptBreakpointEnabled({ [name]: " off " }), false);
+    assert.throws(() => transcriptBreakpointEnabled({ [name]: "false" }), (error) => error.code === "breakpoint_config");
 });
 
 test("proposal MCP server launches the bridge through the hosting runtime", () => {

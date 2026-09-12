@@ -309,7 +309,7 @@ function isTaskkillMissingProcess(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === 128;
 }
 
-function validPid(value: unknown): value is number {
+export function validPid(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 

@@ -1,6 +1,7 @@
 import { chmod, lstat, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { validPid } from "./process-utils.ts";
 
 const MARKER_NAME = ".pi-claude-code-provider-runtime.json";
 const MARKER_SCHEMA = "pi-claude-code-provider-runtime-v1";
@@ -157,10 +158,6 @@ function markerPath(directory: string): string {
 
 function isRuntimeKind(value: unknown): value is RuntimeDirectoryKind {
   return typeof value === "string" && value in PREFIXES;
-}
-
-function validPid(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 function isProcessAlive(pid: number): boolean {

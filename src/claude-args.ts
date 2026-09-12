@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { basename } from "node:path";
+import { ClaudeCodeError } from "./errors.ts";
 import { scriptLaunch, type ScriptLaunch } from "./host-runtime.ts";
 import type { PreparedRequest } from "./types.ts";
 
@@ -12,19 +13,25 @@ const SETTINGS = JSON.stringify({ disableAllHooks: true, autoMemoryEnabled: fals
 const EMPTY_MCP = JSON.stringify({ mcpServers: {} });
 export const BRIDGE_PATH = fileURLToPath(new URL("../bridge/mcp-proposal-server.js", import.meta.url));
 
-// Claude Code 2.1.268 moved the final cache breakpoint off the transcript and onto
-// a trailing message it appends itself, leaving no reusable entry inside the history
-// this provider replays in full every request. Marking the last history block
-// restores that entry. The TTL must be 1h rather than the five-minute default: the
-// API requires breakpoints in longest-TTL-first order, and Claude Code's own
-// markers, including the one it now places after this one, are all 1h. Earlier
-// builds normalize the field away and keep only their own marker, so this is inert
-// there rather than version-gated. 1h also doubles the cache-write premium over the
-// five-minute default; that cost is accepted because the ordering rule leaves no
-// choice, not because the longer lifetime is wanted. Haiku 4.5 is not helped: it
-// receives the same appended content ahead of the transcript, which no marker
-// placement reaches.
+// Claude Code 2.1.268 stopped placing a cache breakpoint inside the history this
+// provider replays, so the provider marks the last history block itself. The 1h
+// TTL is required by the API's longest-TTL-first ordering, not chosen for its
+// lifetime. DESIGN.md#compatibility-and-performance has the full account and cost.
 const TRANSCRIPT_CACHE_CONTROL = { type: "ephemeral", ttl: "1h" } as const;
+
+/**
+ * Escape hatch for a Claude Code release that leaves no room for this breakpoint:
+ * every Claude 5 alias already carries the API's maximum of four.
+ */
+export const TRANSCRIPT_BREAKPOINT_ENV = "PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT";
+
+/** Unset or `on` keeps the transcript breakpoint; `off` drops it. */
+export function transcriptBreakpointEnabled(environment: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = environment[TRANSCRIPT_BREAKPOINT_ENV]?.trim();
+  if (!raw || raw === "on") return true;
+  if (raw === "off") return false;
+  throw new ClaudeCodeError("breakpoint_config", `${TRANSCRIPT_BREAKPOINT_ENV} must be "on" or "off"`);
+}
 
 interface PromptBlock {
   type: "text";
@@ -69,22 +76,23 @@ export function providerArgs(
   prepared: PreparedRequest,
   model: string,
   effort: string,
+  options: { transcriptBreakpoint?: boolean } = {},
 ): { args: string[]; prompt: PromptBlock[] } {
   const imageRefs = prepared.attachmentPaths.map((path) => `@./${basename(path)}`).join(" ");
   const imageInstruction = imageRefs
     ? ` Generated image attachments for image_attachment blocks: ${imageRefs}.`
     : "";
-  // Keep the growing attachment list after unchanged history and outside the
-  // breakpoint, so adding an image cannot invalidate the prefix this provider
-  // caches. That does not make an image-bearing request cacheable: Claude Code
-  // narrates its own attachment read, private directory included, ahead of the
-  // transcript, where nothing the provider places can reach it.
-  const lastHistoryBlock = prepared.transcriptBlocks.length - 1;
+  // Keep the attachment list after unchanged history and outside the breakpoint,
+  // so it cannot invalidate the prefix this provider caches. That does not make
+  // an image-bearing request cacheable: Claude Code narrates its own attachment
+  // read ahead of the transcript, which is why prepareRequest attaches only the
+  // current user turn's images.
+  const markedBlock = options.transcriptBreakpoint === false ? -1 : prepared.transcriptBlocks.length - 1;
   const prompt: PromptBlock[] = [
     ...prepared.transcriptBlocks.map((text, index) => ({
       type: "text" as const,
       text,
-      ...(index === lastHistoryBlock ? { cache_control: TRANSCRIPT_CACHE_CONTROL } : {}),
+      ...(index === markedBlock ? { cache_control: TRANSCRIPT_CACHE_CONTROL } : {}),
     })),
     ...(imageInstruction ? [{ type: "text" as const, text: imageInstruction.trim() }] : []),
   ];

@@ -124,8 +124,7 @@ async function captureOnce(options, executable, home) {
           }
         : {}),
     };
-    const { args, prompt } = providerArgs(prepared, options.model, options.effort);
-    if (!options.marker) for (const block of prompt) delete block.cache_control;
+    const { args, prompt } = providerArgs(prepared, options.model, options.effort, { transcriptBreakpoint: options.marker });
     const env = buildClaudeEnvironment({
       HOME: home,
       ANTHROPIC_BASE_URL: baseUrl,
@@ -134,6 +133,8 @@ async function captureOnce(options, executable, home) {
     });
     // An inherited proxy would send this capture off the loopback interface.
     for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]) delete env[name];
+    // A relocated configuration directory would expose the account this capture must never read.
+    delete env.CLAUDE_CONFIG_DIR;
     const child = spawn(executable, args, { cwd: directory, env, stdio: ["pipe", "ignore", "ignore"] });
     child.stdin.end(`${JSON.stringify({ type: "user", message: { role: "user", content: prompt } })}\n`);
     let timer;

@@ -161,14 +161,17 @@ function registerDoctorCommand(pi: ExtensionAPI, runtimeCleanup: RuntimeCleanupR
 function createRateLimitNotifier(notify: (message: string) => void): (notice: RateLimitNotice) => void {
   const emitted = new Set<string>();
   return (notice) => {
-    const key = JSON.stringify(notice);
-    if (emitted.has(key)) return;
+    // Key on the displayed text: utilization arrives as a fraction that changes
+    // between events while the notice shows whole percent, so keying on the raw
+    // notice would repeat an identical-looking warning on every round trip.
+    const message = formatRateLimitNotice(notice);
+    if (emitted.has(message)) return;
     if (emitted.size >= MAX_TRACKED_RATE_LIMIT_NOTICES) {
       const [oldest] = emitted;
       if (oldest !== undefined) emitted.delete(oldest);
     }
-    emitted.add(key);
-    notify(formatRateLimitNotice(notice));
+    emitted.add(message);
+    notify(message);
   };
 }
 

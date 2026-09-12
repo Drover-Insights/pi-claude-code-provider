@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test from "node:test";
 import { Type } from "typebox";
 import { prepareRequest, prepareRequestWithLimits } from "../../src/context-serializer.ts";
@@ -58,7 +58,7 @@ test("serializes Pi context, tools, literal at-paths, and images privately", asy
         assert.equal(transcript(prepared).includes("@"), false);
         assert.equal(prepared.transcriptBlocks.length, 4);
         const [header, ...messages] = prepared.transcriptBlocks.map((line) => JSON.parse(line));
-        assert.equal(header.protocol, "pi-claude-code-provider-context-v3");
+        assert.equal(header.protocol, "pi-claude-code-provider-context-v4");
         assert.equal(messages[0]?.content, "Do not expand @/etc/passwd");
         assert.match(JSON.stringify(messages[2]), /image_attachment/);
         assert.deepEqual(header.toolNameMap.map((entry) => entry.piName), ["odd tool/name"]);
@@ -291,5 +291,94 @@ test("canonicalizes aliased temp roots containing spaces and decomposed Unicode"
     }
     finally {
         await rm(fixture, { recursive: true, force: true });
+    }
+});
+
+test("aliases tool names Claude Code would rename, so its initialization matches the catalog", async () => {
+    const parameters = Type.Object({ value: Type.String() });
+    const prepared = await prepareRequest({
+        messages: [],
+        tools: [{ name: "foo.bar", description: "dotted", parameters }, { name: "foo_bar", description: "underscored", parameters }],
+    });
+    try {
+        const transportNames = [...prepared.toolNames.keys()];
+        assert.equal(new Set(transportNames).size, 2);
+        for (const name of transportNames) {
+            assert.match(name, /^mcp__pi__[A-Za-z0-9_-]+$/);
+            // Claude Code replaces every other character with "_" when it names an MCP tool.
+            assert.equal(name.replace(/[^A-Za-z0-9_-]/g, "_"), name);
+        }
+        assert.equal(prepared.toolNames.get("mcp__pi__foo_bar"), "foo_bar");
+    }
+    finally {
+        await rm(prepared.directory, { recursive: true, force: true });
+    }
+});
+
+const pixels = (text) => ({ type: "image", data: Buffer.from(text).toString("base64"), mimeType: "image/png" });
+const imageName = (text) => `image-${createHash("sha256").update(text).digest("hex")}.png`;
+function assistantMessage(content, stopReason = "stop") {
+    return {
+        role: "assistant",
+        content,
+        api: "test",
+        provider: "test",
+        model: "test",
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        stopReason,
+        timestamp: 2,
+    };
+}
+
+test("stops attaching an earlier turn's image while keeping its transcript record", async () => {
+    const imageTurn = { role: "user", content: [{ type: "text", text: "first screenshot" }, pixels("old image")], timestamp: 1 };
+    const current = await prepareRequest({ messages: [imageTurn] });
+    const later = await prepareRequest({
+        messages: [imageTurn, assistantMessage([{ type: "text", text: "seen" }]), { role: "user", content: "no image now", timestamp: 3 }],
+    });
+    try {
+        assert.deepEqual(current.attachmentPaths.map((path) => basename(path)), [imageName("old image")]);
+        assert.deepEqual(later.attachmentPaths, []);
+        assert.equal(later.imageBytes, 0);
+        assert.deepEqual((await readdir(later.directory)).filter((name) => name.startsWith("image-")), []);
+        // The record is unchanged, so the history prefix the earlier request cached still matches.
+        assert.deepEqual(later.transcriptBlocks.slice(0, current.transcriptBlocks.length), current.transcriptBlocks);
+    }
+    finally {
+        await Promise.all([current, later].map((item) => rm(item.directory, { recursive: true, force: true })));
+    }
+});
+
+test("attaches images from the latest user message and the tool results after it", async () => {
+    const prepared = await prepareRequest({
+        messages: [
+            { role: "user", content: [pixels("old")], timestamp: 1 },
+            assistantMessage([{ type: "text", text: "seen" }]),
+            { role: "user", content: [{ type: "text", text: "look at this" }, pixels("current")], timestamp: 3 },
+            assistantMessage([{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "shot.png" } }], "toolUse"),
+            { role: "toolResult", toolCallId: "call-1", toolName: "read", content: [pixels("tool result")], isError: false, timestamp: 5 },
+        ],
+    });
+    try {
+        assert.deepEqual(prepared.attachmentPaths.map((path) => basename(path)), [imageName("current"), imageName("tool result")]);
+    }
+    finally {
+        await rm(prepared.directory, { recursive: true, force: true });
+    }
+});
+
+test("counts only attached images toward the image limits", async () => {
+    const prepared = await prepareRequest({
+        messages: [
+            { role: "user", content: Array.from({ length: 21 }, (_, index) => pixels(`old ${index}`)), timestamp: 1 },
+            assistantMessage([{ type: "text", text: "seen" }]),
+            { role: "user", content: [pixels("current")], timestamp: 3 },
+        ],
+    });
+    try {
+        assert.deepEqual(prepared.attachmentPaths.map((path) => basename(path)), [imageName("current")]);
+    }
+    finally {
+        await rm(prepared.directory, { recursive: true, force: true });
     }
 });

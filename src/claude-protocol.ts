@@ -82,8 +82,17 @@ export function terminalResultErrorDetail(
   return result ?? assistantDiagnostic ?? (errors || undefined) ?? terminal ?? rateLimitFailure ?? "unknown error";
 }
 
+// The API's rejection when a request carries more cache_control blocks than it
+// permits. Matched loosely: the wording comes from the API, not from Claude Code.
+const CACHE_BREAKPOINT_LIMIT = /maximum of \d+ blocks with cache_control/i;
+
+/** Whether a terminal failure is the API's cache-breakpoint limit. */
+export function isCacheBreakpointLimit(detail: string): boolean {
+  return CACHE_BREAKPOINT_LIMIT.test(detail);
+}
+
 export function validateClaudeInitialization(value: unknown, expectation: ClaudeInitializationExpectation): string {
-  const record = object(value, "Claude initialization");
+  const record = requireRecord(value, "Claude initialization");
   if (record.type !== "system" || record.subtype !== "init") {
     throw new ClaudeCodeError("protocol_init", "Claude initialization record was invalid");
   }
@@ -144,11 +153,24 @@ function mcpErrorDetail(value: unknown, privatePaths: readonly string[]): string
 }
 
 function safeDiagnostic(value: string, privatePaths: readonly string[], limit: number): string {
+  return redactDiagnostic(value, privatePaths).slice(0, limit);
+}
+
+/**
+ * The tail of a Claude child's stderr, fit for an error message: one line,
+ * bounded, and with private paths replaced. The tail is kept because the last
+ * lines a failing process writes usually explain the failure.
+ */
+export function stderrExcerpt(stderr: string, privatePaths: readonly string[], maxChars = 1_000): string {
+  return redactDiagnostic(stderr, privatePaths).slice(-maxChars).trim();
+}
+
+function redactDiagnostic(value: string, privatePaths: readonly string[]): string {
   let safe = value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
   for (const path of [...privatePaths].sort((left, right) => right.length - left.length)) {
     if (path) safe = safe.split(path).join("<PRIVATE>");
   }
-  return safe.slice(0, limit);
+  return safe;
 }
 
 function validTimestamp(value: unknown): number | undefined {
@@ -172,7 +194,8 @@ function formatNames(names: ReadonlySet<string>): string {
   return [...names].sort().join(", ") || "none";
 }
 
-function object(value: unknown, field: string): Record<string, unknown> {
+/** Narrow an untrusted protocol value to a plain object, or fail with its field name. */
+export function requireRecord(value: unknown, field: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new ClaudeCodeError("protocol_shape", `${field} must be an object`);
   }

@@ -72,11 +72,13 @@ Provider and web-search requests consume Claude subscription capacity. A cancell
 
 Anthropic documents [`claude -p` / `--print`](https://code.claude.com/docs/en/cli-reference) as its non-interactive CLI interface, explains that [third-party usage draws from subscription limits](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan), and documents [subscription authentication and usage credits](https://support.claude.com/en/articles/11145838-use-claude-code-with-your-pro-or-max-plan). This project uses that public interface without claiming Anthropic endorsement.
 
-Rate-limit warnings and reset times appear as Pi notifications when Claude provides them, including for web-search requests, and each distinct notice is reported once per session. Utilization is displayed using Claude Code's whole-percent convention. Overage status is reported only when it constrains the request, so a plan with usage credits disabled produces no notification while its own limits are healthy.
+Rate-limit warnings and reset times appear as Pi notifications when Claude provides them, including for web-search requests, and each distinct notice, as displayed, is reported once per session. Utilization is displayed using Claude Code's whole-percent convention. Overage status is reported only when it constrains the request, so a plan with usage credits disabled produces no notification while its own limits are healthy.
 
 ## Compatibility limitation
 
-Claude Code's public headless protocol cannot accept arbitrary historical assistant and tool-result messages, so the provider sends Pi's complete current history as an append-stable semantic transcript on every request. Pi remains authoritative for branching, compaction, reloads, and provider handoff; the transport is not wire-equivalent to Anthropic's Messages API, consumes additional context, and sets one cache breakpoint of its own, on the last history block. That breakpoint uses a one-hour TTL, which the API's breakpoint ordering requires and which doubles the cache-write rate over the five-minute default; cache keys remain Claude's. Haiku requests, and requests carrying image attachments, get no prompt-cache reuse, because Claude Code places per-request content ahead of the transcript.
+Claude Code's public headless protocol cannot accept arbitrary historical assistant and tool-result messages, so the provider sends Pi's complete current history as an append-stable semantic transcript on every request. Pi remains authoritative for branching, compaction, reloads, and provider handoff; the transport is not wire-equivalent to Anthropic's Messages API, consumes additional context, and sets one cache breakpoint of its own, on the last history block. That breakpoint uses a one-hour TTL, which the API's breakpoint ordering requires and which doubles the cache-write rate over the five-minute default; cache keys remain Claude's. Haiku requests get no prompt-cache reuse, because Claude Code places per-request content ahead of the transcript.
+
+A request that attaches an image gets no prompt-cache reuse either, for the same reason. The provider therefore attaches only the current user turn's images: those in your latest message and in the tool results after it. Earlier images stay in the transcript as records but are not shown to Claude again, so it cannot re-inspect them and relies on the earlier conversation about them; caching resumes from the request after your next prompt. A steering message or a compaction-summary request also starts a new turn in this sense, and the tool round trips within an image-bearing turn remain uncached.
 
 ## Configuration
 
@@ -88,19 +90,23 @@ Claude Code's public headless protocol cannot accept arbitrary historical assist
 | `PI_CLAUDE_CODE_PROVIDER_IDLE_TIMEOUT_MS` | Override the five-minute protocol-idle timeout with positive milliseconds. |
 | `PI_CLAUDE_CODE_PROVIDER_TOTAL_TIMEOUT_MS` | Override the 30-minute total timeout with positive milliseconds. |
 | `PI_CLAUDE_CODE_PROVIDER_MCP_READY_TIMEOUT_MS` | Override the five-second tool-catalog readiness timeout with positive milliseconds. |
+| `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT` | `on` (default) or `off`. `off` drops the provider's own prompt-cache breakpoint, which loses prompt caching; use it only when a Claude Code release fails requests for carrying too many cache breakpoints. |
 
 Metrics exclude prompts, messages, queries, output, credentials, stderr, and temporary paths. On POSIX, the log is kept at mode 0600; Windows uses the selected location's ACL.
+
+Claude processes receive only an allowlisted environment. Besides locale, proxy, and path variables, it forwards `CLAUDE_CONFIG_DIR` for a relocated Claude Code configuration and `NODE_EXTRA_CA_CERTS` for a TLS-inspecting proxy's CA bundle.
 
 ## Security and troubleshooting
 
 Pi packages run with the user's permissions; review the source before installation and treat model-visible context like any other Claude Code prompt. Main requests suppress unmanaged user and project customizations and local tools, validate capabilities, and remove private request state before success. Administrator-managed Claude Code settings, hooks, and MCP policy are organization-trusted and can take effect before validation; abrupt host termination can still leave state behind. See [DESIGN.md](DESIGN.md) for the security model and [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 - **Provider missing:** run the doctor, correct the reported problem, then run `/reload`.
-- **Authentication rejected:** run `claude auth status` and log in with an eligible first-party subscription.
+- **Authentication rejected:** run `claude auth status` and log in with an eligible first-party subscription. Logins made with `claude setup-token` through `CLAUDE_CODE_OAUTH_TOKEN` are not forwarded to Claude and are unsupported.
 - **Compatibility warning:** compare the installed versions with [DEVELOPING.md](DEVELOPING.md#compatibility-baseline). To acknowledge an unverified platform without changing its verification status, launch with e.g. `PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM=linux/arm64 pi`. This hides that platform's startup advisory only; unset the variable to restore it. It is not evidence that live validation passed.
 - **Search unavailable:** allow `pi_claude_code_provider_web_search` in Pi's tool filters and check for a name collision.
 - **`pi auth check` reports `provider_not_found`:** that command does not load extensions, so it cannot see any extension-registered provider. Use `/pi-claude-code-provider-doctor` to check readiness.
 - **Tool proposals never arrive, or requests fail with `mcp_startup`:** run `/pi-claude-code-provider-doctor`. It reports the exact bridge argument vector and whether the handshake completed. Raising `PI_CLAUDE_CODE_PROVIDER_MCP_READY_TIMEOUT_MS` only helps when the handshake succeeds but is slow.
+- **Every request fails naming `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT` or too many `cache_control` blocks:** a Claude Code release added a prompt-cache breakpoint of its own and left no room for the provider's. Restart Pi with `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT=off` to keep working without prompt caching, and report the Claude Code version.
 - **A request fails because the system prompt alone exceeds the model's context:** Pi's system prompt carries your project context files and one entry per loaded skill, and compaction never shrinks it. Reduce the loaded context or skills, or select a model with a larger context window. There is no separate size ceiling of the provider's own.
 - **Stale Windows state after an abrupt exit or `process_cleanup` failure:** a cleanup failure deliberately retains its marked directory when Claude process death is uncertain. Stop the relevant Pi and Claude processes, locate the temporary directory (`node -p "require('node:os').tmpdir()"`, or `echo %TEMP%` when Pi is the standalone build and Node is absent), inspect package marker files, and remove only confirmed stale directories.
 

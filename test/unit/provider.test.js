@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { isContextOverflow } from "@earendil-works/pi-ai";
-import { createClaudeStream, isExpectedToolHandoffExit, waitForReadyOrExit } from "../../src/provider.ts";
+import { createClaudeStream as createProviderStream, isExpectedToolHandoffExit, waitForReadyOrExit } from "../../src/provider.ts";
 import { getLastRequestMetrics } from "../../src/metrics.ts";
 import { superviseProcess, terminateProcessGroup } from "../../src/process-utils.ts";
 import { nodeFixtureSource } from "../support/node-fixture.js";
-import { PROVIDER_INIT_FIELDS, initRecord } from "../support/claude-fixture.js";
+import { PROVIDER_INIT_FIELDS, initRecord, toolUseEvents } from "../support/claude-fixture.js";
 const model = {
     id: "sonnet",
     name: "Sonnet",
@@ -59,10 +59,26 @@ const toolTerminationResult = {
     usage: { input_tokens: 4, output_tokens: 2 },
     modelUsage: { sonnet: { contextWindow: 1000000, maxOutputTokens: 64000 } },
 };
+// The last request's metrics are process-global, so a waiter could match an
+// earlier request's record. Snapshot them as each request starts and accept only
+// a different record. Two requests started in one millisecond could record
+// identical metrics, so each start first waits out the previous request's.
+let metricsBeforeRequest;
+let lastRequestStartedAt = 0;
+function createClaudeStream(...setup) {
+    const streamSimple = createProviderStream(...setup);
+    return (...request) => {
+        while (Date.now() <= lastRequestStartedAt) { /* wait out the millisecond */ }
+        metricsBeforeRequest = JSON.stringify(getLastRequestMetrics() ?? null);
+        const stream = streamSimple(...request);
+        lastRequestStartedAt = Date.now();
+        return stream;
+    };
+}
 async function waitForRequestMetrics(predicate) {
     for (let attempt = 0; attempt < 200; attempt++) {
         const metrics = getLastRequestMetrics();
-        if (metrics && predicate(metrics)) return metrics;
+        if (metrics && JSON.stringify(metrics) !== metricsBeforeRequest && predicate(metrics)) return metrics;
         await new Promise((resolve) => setTimeout(resolve, 10));
     }
     throw new Error("request metrics did not settle");
@@ -156,6 +172,7 @@ test("provider rejects malformed logical payloads before claim or spawn", async 
         [[{ role: "assistant", content: [{ type: "toolCall", id: "call", name: "read", arguments: [] }] }], [], /tool-call arguments must be an object/],
         [[{ role: "toolResult", toolCallId: "call", toolName: "read", content: [], isError: "false" }], [], /isError must be boolean/],
         [[{ role: "user", content: [{ type: "image", data: "AA==" }] }], [], /Unsupported image type/],
+        [[{ role: "user", content: [{ type: "image", data: 12345678, mimeType: "image/png" }] }], [], /not valid base64/],
         [context.messages, [null], /invalid active tool/],
         [context.messages, [{ name: "read", description: "read", parameters: [] }], /active tool schema must be an object/],
         [context.messages, [{ name: "read", description: "read", parameters: circular }], /must be JSON-serializable/],
@@ -598,10 +615,7 @@ else process.on("SIGTERM", () => {
 process.stdin.resume();
 process.stdin.on("end", () => {
   process.stdout.write(JSON.stringify(${JSON.stringify(toolInit)}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_start",message:{id:"msg_violation",model:"claude-sonnet-5",usage:{}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_start",index:0,content_block:{type:"tool_use",id:"toolu_violation",name:"mcp__pi__read",input:{}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_stop",index:0}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_delta",delta:{stop_reason:"tool_use"}}}) + "\\n");
+  for (const record of ${JSON.stringify(toolUseEvents({ messageId: "msg_violation", toolUseId: "toolu_violation" }))}) process.stdout.write(JSON.stringify(record) + "\\n");
   setInterval(() => {}, 1000);
 });`);
     try {
@@ -626,10 +640,7 @@ else process.on("SIGTERM", () => {
 process.stdin.resume();
 process.stdin.on("end", () => {
   process.stdout.write(JSON.stringify(${JSON.stringify(toolInit)}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_start",message:{id:"msg_cleanup_violation",model:"claude-sonnet-5",usage:{}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_start",index:0,content_block:{type:"tool_use",id:"toolu_cleanup_violation",name:"mcp__pi__read",input:{}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_stop",index:0}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_delta",delta:{stop_reason:"tool_use"}}}) + "\\n");
+  for (const record of ${JSON.stringify(toolUseEvents({ messageId: "msg_cleanup_violation", toolUseId: "toolu_cleanup_violation" }))}) process.stdout.write(JSON.stringify(record) + "\\n");
   setInterval(() => {}, 1000);
 });`);
     let privateDirectory;
@@ -675,11 +686,7 @@ test("provider accepts an exact-PID Windows tool handoff", { skip: process.platf
 process.stdin.resume();
 process.stdin.on("end", () => {
   process.stdout.write(JSON.stringify(${JSON.stringify(toolInit)}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_start",message:{id:"msg_windows_tool",model:"claude-sonnet-5",usage:{}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_start",index:0,content_block:{type:"tool_use",id:"toolu_windows",name:"mcp__pi__read",input:{}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_delta",index:0,delta:{type:"input_json_delta",partial_json:'{"path":"package.json"}'}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_stop",index:0}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_delta",delta:{stop_reason:"tool_use"}}}) + "\\n");
+  for (const record of ${JSON.stringify(toolUseEvents({ messageId: "msg_windows_tool", toolUseId: "toolu_windows", partialJson: '{"path":"package.json"}' }))}) process.stdout.write(JSON.stringify(record) + "\\n");
   setInterval(() => {}, 1000);
 });`);
     try {
@@ -740,12 +747,7 @@ test("provider settles and retains marked state when tool-handoff termination fa
 process.stdin.resume();
 process.stdin.on("end", () => {
   process.stdout.write(JSON.stringify(${JSON.stringify(toolInit)}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_start",message:{id:"msg_tool_cleanup",model:"claude-sonnet-5",usage:{}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_start",index:0,content_block:{type:"tool_use",id:"toolu_cleanup",name:"mcp__pi__read",input:{}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_delta",index:0,delta:{type:"input_json_delta",partial_json:'{"path":"package.json"}'}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_stop",index:0}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_delta",delta:{stop_reason:"tool_use"}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_stop"}}) + "\\n");
+  for (const record of ${JSON.stringify(toolUseEvents({ messageId: "msg_tool_cleanup", toolUseId: "toolu_cleanup", partialJson: '{"path":"package.json"}', messageStop: true }))}) process.stdout.write(JSON.stringify(record) + "\\n");
   setInterval(() => {}, 1000);
 });`);
     let capturedChild;
@@ -799,11 +801,7 @@ process.on("SIGTERM", () => process.exit(143));
 process.stdin.resume();
 process.stdin.on("end", () => {
   process.stdout.write(JSON.stringify(${JSON.stringify(toolInit)}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_start",message:{id:"msg_missing_ack",model:"claude-sonnet-5",usage:{}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_start",index:0,content_block:{type:"tool_use",id:"toolu_missing_ack",name:"mcp__pi__read",input:{}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_delta",index:0,delta:{type:"input_json_delta",partial_json:'{"path":"package.json"}'}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_stop",index:0}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_delta",delta:{stop_reason:"tool_use"}}}) + "\\n");
+  for (const record of ${JSON.stringify(toolUseEvents({ messageId: "msg_missing_ack", toolUseId: "toolu_missing_ack", partialJson: '{"path":"package.json"}' }))}) process.stdout.write(JSON.stringify(record) + "\\n");
   setInterval(() => {}, 1000);
 });`);
     try {
@@ -825,11 +823,7 @@ process.on("SIGTERM", () => {
 process.stdin.resume();
 process.stdin.on("end", () => {
   process.stdout.write(JSON.stringify(${JSON.stringify(toolInit)}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_start",message:{id:"msg_bad_exit",model:"claude-sonnet-5",usage:{}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_start",index:0,content_block:{type:"tool_use",id:"toolu_bad_exit",name:"mcp__pi__read",input:{}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_delta",index:0,delta:{type:"input_json_delta",partial_json:'{"path":"package.json"}'}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_stop",index:0}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_delta",delta:{stop_reason:"tool_use"}}}) + "\\n");
+  for (const record of ${JSON.stringify(toolUseEvents({ messageId: "msg_bad_exit", toolUseId: "toolu_bad_exit", partialJson: '{"path":"package.json"}' }))}) process.stdout.write(JSON.stringify(record) + "\\n");
   setInterval(() => {}, 1000);
 });`);
     try {
@@ -849,11 +843,7 @@ process.on("SIGTERM", () => {});
 process.stdin.resume();
 process.stdin.on("end", () => {
   process.stdout.write(JSON.stringify(${JSON.stringify(toolInit)}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_start",message:{id:"msg_bad_signal",model:"claude-sonnet-5",usage:{}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_start",index:0,content_block:{type:"tool_use",id:"toolu_bad_signal",name:"mcp__pi__read",input:{}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_delta",index:0,delta:{type:"input_json_delta",partial_json:'{"path":"package.json"}'}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_stop",index:0}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_delta",delta:{stop_reason:"tool_use"}}}) + "\\n");
+  for (const record of ${JSON.stringify(toolUseEvents({ messageId: "msg_bad_signal", toolUseId: "toolu_bad_signal", partialJson: '{"path":"package.json"}' }))}) process.stdout.write(JSON.stringify(record) + "\\n");
   setInterval(() => {}, 1000);
 });`);
     try {
@@ -878,11 +868,7 @@ process.on("SIGTERM", () => {
 process.stdin.resume();
 process.stdin.on("end", () => {
   process.stdout.write(JSON.stringify(${JSON.stringify(toolInit)}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_start",message:{id:"msg_abort_ack",model:"claude-sonnet-5",usage:{}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_start",index:0,content_block:{type:"tool_use",id:"toolu_abort_ack",name:"mcp__pi__read",input:{}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_delta",index:0,delta:{type:"input_json_delta",partial_json:'{"path":"package.json"}'}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_stop",index:0}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_delta",delta:{stop_reason:"tool_use"}}}) + "\\n");
+  for (const record of ${JSON.stringify(toolUseEvents({ messageId: "msg_abort_ack", toolUseId: "toolu_abort_ack", partialJson: '{"path":"package.json"}' }))}) process.stdout.write(JSON.stringify(record) + "\\n");
   setInterval(() => {}, 1000);
 });`);
     try {
@@ -1278,4 +1264,67 @@ test("the system-prompt budget is measured after Pi's payload hook", async () =>
     const metrics = await waitForRequestMetrics((entry) => entry.errorCategory !== "system_prompt_budget");
     assert.notEqual(metrics.errorCategory, "system_prompt_budget");
     assert.notEqual(metrics.lastPhase, "payload_applied");
+});
+test("provider rejects an invalid transcript-breakpoint setting before claiming a launch", async () => {
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT;
+    process.env.PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT = "maybe";
+    let claims = 0;
+    try {
+        const result = await createClaudeStream(DEAD_INSTALLATION, { claimLaunch: async () => { claims++; } })(model, context, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "error");
+        assert.match(result.errorMessage ?? "", /PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT must be "on" or "off"/);
+        const metrics = await waitForRequestMetrics((entry) => entry.errorCategory === "breakpoint_config");
+        assert.equal(metrics.lastPhase, "prepared");
+        assert.equal(claims, 0);
+    }
+    finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT = original;
+    }
+});
+test("provider sends Claude no transcript breakpoint when the setting is off", async () => {
+    const fake = await fakeClaude(`
+const path = require("node:path");
+const NL = String.fromCharCode(10);
+let input = "";
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  fs.writeFileSync(path.join(__dirname, "captured-stdin"), input);
+  process.stdout.write(JSON.stringify(${JSON.stringify(init)}) + NL);
+  process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"ok",usage:{}}) + NL);
+});`);
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT;
+    process.env.PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT = "off";
+    try {
+        const result = await createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" })(model, context, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "stop", result.errorMessage);
+        const prompt = JSON.parse(await readFile(join(fake.dir, "captured-stdin"), "utf8")).message.content;
+        assert.ok(prompt.length > 0);
+        assert.equal(prompt.some((block) => "cache_control" in block), false);
+    }
+    finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT = original;
+        await rm(fake.dir, { recursive: true, force: true });
+    }
+});
+test("provider records a cache-breakpoint limit rejection as its own category", async () => {
+    const rejection = { type: "result", is_error: true, api_error_status: 400, result: "API Error: 400 A maximum of 4 blocks with cache_control may be provided. Found 5." };
+    const fake = await fakeClaude(`
+const NL = String.fromCharCode(10);
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify(${JSON.stringify(init)}) + NL);
+  process.stdout.write(JSON.stringify(${JSON.stringify(rejection)}) + NL);
+});`);
+    try {
+        const result = await createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" })(model, context, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "error");
+        assert.match(result.errorMessage ?? "", /PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT=off/);
+        const metrics = await waitForRequestMetrics((entry) => entry.errorCategory === "cache_breakpoint_limit");
+        assert.equal(metrics.stopReason, "error");
+    }
+    finally {
+        await rm(fake.dir, { recursive: true, force: true });
+    }
 });
