@@ -14,6 +14,7 @@
 - Malformed messages, content blocks, and tools in a request context now fail with transcript preparation's `content_shape`, `content_type`, or image error categories instead of `payload_invalid`, which remains for a payload with an invalid top-level shape. Two layers previously checked the same rules. A non-boolean thinking `redacted` flag or a non-string image `mimeType` still fails, now with `content_shape`.
 - Web-search rate-limit rejections now include the overage-disabled reason, matching provider requests.
 - `/pi-claude-code-provider-doctor` prints one labeled fact per line.
+- The npm package description, which pi.dev shows as the package summary, now reads: "The convenience of your Claude subscription in Pi, with the fewest possible surprises. Uses Claude Code's CLI under the hood."
 
 ### Fixed
 
