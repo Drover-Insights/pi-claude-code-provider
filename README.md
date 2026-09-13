@@ -20,7 +20,7 @@ Pi ships as an npm package that runs on Node and as a compiled standalone binary
 
 See the [compatibility baseline](DEVELOPING.md#compatibility-baseline) for tested versions and platforms. Other platforms continue with a warning and runtime capability checks.
 
-The provider rejects API-key authentication, alternate Anthropic base URLs, and Bedrock, Vertex, or Foundry routing. If `claude` is not on `PATH`, set `PI_CLAUDE_CODE_PROVIDER_PATH` to its executable path.
+The provider rejects API-key authentication and any non-first-party routing, such as Bedrock, Vertex, or Foundry, and does not forward API keys or `ANTHROPIC_BASE_URL` to Claude. If `claude` is not on `PATH`, set `PI_CLAUDE_CODE_PROVIDER_PATH` to its executable path.
 
 ## Install
 
@@ -78,7 +78,7 @@ Rate-limit warnings and reset times appear as Pi notifications when Claude provi
 
 Claude Code's public headless protocol cannot accept arbitrary historical assistant and tool-result messages, so the provider sends Pi's complete current history as an append-stable semantic transcript on every request. Pi remains authoritative for branching, compaction, reloads, and provider handoff; the transport is not wire-equivalent to Anthropic's Messages API, consumes additional context, and sets one cache breakpoint of its own, on the last history block. That breakpoint uses a one-hour TTL, which the API's breakpoint ordering requires and which doubles the cache-write rate over the five-minute default; cache keys remain Claude's.
 
-A request that attaches an image gets no prompt-cache reuse, because Claude Code narrates reading the attachment ahead of the transcript. The provider therefore attaches an image only until Claude has replied to it: images in your latest message, in the tool results after it, and in any messages sent since Claude's last reply are attached. Images Claude replied to before your latest message stay in the transcript as records but are not shown to Claude again, so it cannot re-inspect them and relies on the earlier conversation about them; caching resumes from the request after your next prompt. A steering message or a compaction-summary request likewise stops re-attaching images Claude has already replied to, and the tool round trips within an image-bearing turn remain uncached.
+A request that attaches an image gets no prompt-cache reuse, so the provider attaches an image only until Claude has replied to it. After that the image stays in the transcript as a record but is not shown to Claude again, so Claude cannot re-inspect it and relies on the earlier conversation about it; caching resumes from the request after your next prompt. Tool round trips within an image-bearing turn remain uncached. [DESIGN.md](DESIGN.md#request-and-transcript-transport) gives the exact rule and the reasons.
 
 ## Configuration
 
@@ -108,7 +108,7 @@ Pi packages run with the user's permissions; review the source before installati
 - **Tool proposals never arrive, or requests fail with `mcp_startup`:** run `/pi-claude-code-provider-doctor`. It reports the exact bridge argument vector and whether the handshake completed. Raising `PI_CLAUDE_CODE_PROVIDER_MCP_READY_TIMEOUT_MS` only helps when the handshake succeeds but is slow.
 - **Every request fails naming `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT` or too many `cache_control` blocks:** a Claude Code release added a prompt-cache breakpoint of its own and left no room for the provider's. Restart Pi with `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT=off` to keep working without prompt caching, and report the Claude Code version.
 - **A request fails because the system prompt alone exceeds the model's context:** Pi's system prompt carries your project context files and one entry per loaded skill, and compaction never shrinks it. Reduce the loaded context or skills, or select a model with a larger context window. There is no separate size ceiling of the provider's own.
-- **A request fails with `working_directory`:** Claude runs in Pi's session working directory, and that directory no longer exists, is not a directory, or no Pi session has started. The provider never runs Claude somewhere else instead. Restart Pi from an existing directory.
+- **A request fails with `working_directory`:** Claude runs in Pi's session working directory, and that directory is not absolute, cannot be read (usually because it no longer exists), is not a directory, or no Pi session has started. The provider never runs Claude somewhere else instead. Restart Pi from an existing directory.
 - **An image request fails with `image_path`:** the temporary directory's path contains a double quote, which Claude Code's attachment syntax cannot express. Point `TMPDIR` (or `TEMP` on Windows) at a directory without one.
 - **Stale Windows state after an abrupt exit or `process_cleanup` failure:** a cleanup failure deliberately retains its marked directory when Claude process death is uncertain. Stop the relevant Pi and Claude processes, locate the temporary directory (`node -p "require('node:os').tmpdir()"`, or `echo %TEMP%` when Pi is the standalone build and Node is absent), inspect package marker files, and remove only confirmed stale directories.
 

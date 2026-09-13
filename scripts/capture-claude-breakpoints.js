@@ -24,6 +24,7 @@
 //
 //   npm run capture:claude-breakpoints
 //   npm run capture:claude-breakpoints -- --model haiku
+//   npm run capture:claude-breakpoints -- --model opus --effort high
 //   npm run capture:claude-breakpoints -- --strip-marker
 //   npm run capture:claude-breakpoints -- --images 2 --output /tmp/body.json
 import { execFileSync, spawn } from "node:child_process";
@@ -246,6 +247,10 @@ function report(captures, options, startup) {
   console.log(`served model:   ${body.model}`);
   console.log(`message roles:  ${(body.messages ?? []).map((message) => message.role).join(", ")}`);
   const marked = blocks.flatMap(([label, block], position) => (block.cache_control ? [{ position, label, block }] : []));
+  // The last breakpoint inside the transcript marks the prefix a later request
+  // reuses. Only a change at or ahead of it invalidates that entry; the
+  // attachment list after it varies by design.
+  const transcriptBreakpoint = marked.filter(({ position }) => position >= first && position <= last).at(-1)?.position ?? -1;
   console.log(`breakpoints:    ${marked.length} of ${MAX_BREAKPOINTS} permitted`);
   for (const { position, label, block } of marked) {
     const ttl = block.cache_control.ttl ?? "5m (default)";
@@ -297,10 +302,10 @@ function report(captures, options, startup) {
             ? "BROKEN: the proposal bridge was not ready when Claude Code sent its request"
             : marked.length > MAX_BREAKPOINTS
               ? `BROKEN: ${marked.length} breakpoints exceeds the ${MAX_BREAKPOINTS} the API accepts; it will reject this request`
-              : !marked.some(({ position }) => position >= first && position <= last)
+              : transcriptBreakpoint === -1
                 ? "BROKEN: no breakpoint inside the transcript, so no growing prefix is reusable"
-                : varying !== -1 && varying <= last
-                  ? "BROKEN: a block ahead of the transcript changes every request, so its cached entry is never matched"
+                : varying !== -1 && varying <= transcriptBreakpoint
+                  ? `BROKEN: ${blocks[varying][0]} (${region(varying)}) changes every request, at or ahead of the transcript breakpoint, so its cached entry is never matched`
                   : "HEALTHY: no startup side effects, and the transcript carries a breakpoint with everything ahead of it stable";
   console.log(`verdict:        ${verdict}`);
   return verdict.startsWith("HEALTHY");

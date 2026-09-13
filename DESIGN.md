@@ -51,7 +51,7 @@ Claude Code can further append turn nudges to user turns and tool results. Those
 
 ## Tool proposal boundary
 
-Active Pi schemas are sorted into an ephemeral MCP catalog. Names made only of the characters Claude Code keeps unchanged in an MCP tool name (letters, digits, `_`, and `-`) are preserved; other names receive deterministic request-local aliases. Removed historical tools receive non-callable labels.
+Active Pi schemas are sorted into an ephemeral MCP catalog. Names of at most 48 characters made only of the characters Claude Code keeps unchanged in an MCP tool name (letters, digits, `_`, and `-`) are preserved; other names receive deterministic request-local aliases. Removed historical tools receive non-callable labels.
 
 The Claude child runs in `dontAsk` mode with local tools disabled. A proposal-only MCP server implements `initialize` and `tools/list`; any `tools/call` writes a violation marker and returns an error. The provider waits for catalog readiness, maps complete known proposals back to Pi, terminates Claude, verifies cleanup and violation state, removes private transport files, and only then publishes the Pi `toolUse` result.
 
@@ -65,7 +65,7 @@ System prompts, transcript attachments, catalogs, and markers live in randomized
 
 **Claude's own working directory is Pi's session directory.** The extension reads it from the session's context at `session_start`, not from Pi's process directory, which a resumed or imported session can differ from.
 
-**Validation before any launch.** Each request reads that directory once and validates it before any private state exists. Three cases fail with `working_directory` without launching: a missing directory, a path that is not a directory, and a request outside a started session. A directory that disappears between validation and spawn fails the same way.
+**Validation before any launch.** Each request reads that directory once and validates it before any private state exists. A request fails with `working_directory` without launching when no Pi session has started, the path is not absolute, it cannot be read (for example because it no longer exists), or it is not a directory. A directory that disappears between validation and spawn fails the same way.
 
 **No fallback.** The provider never substitutes another directory, because any other would contradict Pi's again.
 
@@ -99,7 +99,7 @@ Model-proposed file and shell operations execute only through Pi. That is narrow
 
 ## Compatibility and performance
 
-Machine-readable verified versions and model resolutions live in `src/compatibility.ts`; procedures live in [DEVELOPING.md](DEVELOPING.md). Version metadata is advisory, while protocol and capability mismatches fail at runtime.
+Machine-readable verified versions and the model family each alias must serve live in `src/compatibility.ts`; procedures live in [DEVELOPING.md](DEVELOPING.md). Version metadata is advisory, while protocol and capability mismatches fail at runtime.
 
 Full transcript serialization is required by the stateless design. Stable record boundaries preserve cacheable prefixes, so performance changes must not rewrite unchanged history or weaken validation and cleanup ordering.
 
