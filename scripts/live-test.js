@@ -4,9 +4,10 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { deflateSync } from "node:zlib";
 import { assistantReply, closeLiveRpcProcess, consumeJsonl, superviseLiveProcess } from "./lib/live-process.js";
-import { describePiLaunch, livePiLaunch } from "./lib/pi-installation.js";
+import { describePiLaunch, livePiLaunch, locatePiPackages, packageEntry } from "./lib/pi-installation.js";
 if (process.env.PI_CLAUDE_CODE_PROVIDER_PAID_TEST_CHILD !== "1") {
     throw new Error("Paid live tests must be started through an npm test:paid:* script");
 }
@@ -302,6 +303,22 @@ function quadrantPng() {
         pngChunk("IEND", Buffer.alloc(0)),
     ]);
 }
+/**
+ * The full stage's tool steps run shell scripts through Pi's bash tool, and on
+ * Windows that tool needs Git Bash. Resolve the shell exactly as Pi does, before
+ * any Claude launch, so a missing one fails by name instead of spending quota.
+ */
+async function requireBashTool() {
+    const { getShellConfig } = await import(pathToFileURL(packageEntry(locatePiPackages().codingAgent, "import")).href);
+    try {
+        getShellConfig();
+    }
+    catch (error) {
+        throw new Error(`The full live stage needs a shell for Pi's bash tool (Git Bash on Windows): ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+if (full && !cache && !bridge && !postTools)
+    await requireBashTool();
 const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-live-"));
 try {
     if (cacheImages) {
@@ -329,14 +346,18 @@ try {
             const literalAtPath = await runPi(directory, "This transcript contains the literal token @/etc/hostname. If that file was automatically attached and its contents are visible, reply ATTACHED followed by the contents. Otherwise reply exactly SAFE.", ["--no-tools"]);
             assert.equal(literalAtPath, "SAFE");
             console.log("ok - literal at-path isolation");
-            const hello = await runPi(directory, "Use write to create hello.py that prints exactly Hello, world! Then use bash to run it. Report the output.");
+            // Shell scripts only: the tool loop is under test, not whichever
+            // interpreters the machine has. A missing one sent the model searching
+            // the whole disk on Windows.
+            const hello = await runPi(directory, "Use write to create hello.sh containing a command that prints exactly Hello, world! Then use bash to run: bash hello.sh. Report the output.");
             assert.match(hello, /Hello, world!/);
-            assert.equal((await readFile(join(directory, "hello.py"), "utf8")).trim(), 'print("Hello, world!")');
+            assert.match(await readFile(join(directory, "hello.sh"), "utf8"), /Hello, world!/);
             console.log("ok - Pi write and bash tool loop");
-            await writeFile(join(directory, "calc.py"), 'print("old")\n');
-            const math = await runPi(directory, "Use edit to make calc.py print 12345 * 6789, then run it with bash and report the exact result.");
+            await writeFile(join(directory, "calc.sh"), "echo old\n");
+            const math = await runPi(directory, "Use edit to make calc.sh print the result of 12345 * 6789 using shell arithmetic, then run it with bash and report the exact result.");
             assert.match(math, /83810205/);
-            console.log("ok - Pi edit and code-based math");
+            assert.doesNotMatch(await readFile(join(directory, "calc.sh"), "utf8"), /\bold\b/);
+            console.log("ok - Pi edit and shell arithmetic");
             await runProviderJourney(directory);
         }
         await writeFile(join(directory, "green.png"), greenPng());
