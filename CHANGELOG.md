@@ -25,6 +25,7 @@
 - `npm run capture:claude-breakpoints` reports where Claude Code places prompt-cache breakpoints in the request this provider builds, using the provider's own arguments against a loopback server. It spends no quota, takes two captures so a per-request varying prefix is visible at all, and exits non-zero unless the shape can actually be reused.
 - `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT=off` drops the provider's own prompt-cache breakpoint. Every Claude 5 alias already carries the API's maximum of four, so a Claude Code release that adds one would fail every request; the provider now recognizes that rejection, names the setting in the error, and records `cache_breakpoint_limit`.
 - Claude processes receive `CLAUDE_CONFIG_DIR` and `NODE_EXTRA_CA_CERTS` when set, so a relocated Claude Code configuration and a TLS-inspecting proxy's CA bundle work. Logins through `CLAUDE_CODE_OAUTH_TOKEN` remain unsupported.
+- `PI_CLAUDE_CODE_PROVIDER_DEV_PI` selects the npm-installed Pi that development checks and tests resolve packages from, so a standalone Pi can stay first on `PATH`.
 
 ### Changed
 

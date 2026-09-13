@@ -2,7 +2,7 @@
 
 ## Setup
 
-An **npm-installed** global Pi is required. Runtime imports and test types resolve from the active `pi` executable, and only the npm layout exposes those packages: the standalone tar.gz build compiles them into a single binary. A standalone Pi is a supported *runtime target*, not a supported development host, and `npm run check` says so by name if the `pi` on `PATH` is the compiled build.
+An **npm-installed** Pi is required. Runtime imports and test types resolve from the development `pi` executable, and only the npm layout exposes those packages: the standalone tar.gz build compiles them into a single binary. A standalone Pi is a supported *runtime target*, not a supported development host, and `npm run check` says so by name, and names `PI_CLAUDE_CODE_PROVIDER_DEV_PI`, if the `pi` it resolves is the compiled build.
 
 ```bash
 npm run setup:dev
@@ -12,7 +12,7 @@ npm test
 
 Do not run `npm install` at the repository root. The package has no installed dependencies and must not contain root `node_modules` or a root lockfile. `setup:dev` installs the isolated, locked `tooling/` package containing the TypeScript parser/compiler and Node declarations used by source-policy checks and typechecking. Its ignored `node_modules/` is generated development state, not published runtime code. Pi loads the TypeScript extension directly; there is no runtime build.
 
-When npm and standalone Pi installations coexist, development uses whichever `pi` resolves first on `PATH`. Put the npm installation's bin directory first for `npm run check` and `npm test`; verify it with `command -v pi` on POSIX or `where pi` on Windows. Keep the development host npm-based, and use `PI_CLAUDE_CODE_PROVIDER_PI_BIN` only to select a standalone executable for the live bridge lane. The resolver finds the package that owns the `pi` executable at any CLI depth and checks package identities. Resolving an installation does not establish version compatibility: if its exported modules have missing dependencies, use an isolated npm installation of the verified Pi version rather than modifying the global install.
+When npm and standalone Pi installations coexist, development uses `PI_CLAUDE_CODE_PROVIDER_DEV_PI` when it is set, and otherwise whichever `pi` resolves first on `PATH`. To keep a standalone Pi as your default `pi`, set `PI_CLAUDE_CODE_PROVIDER_DEV_PI` in your shell profile to an npm installation's `pi` executable; on POSIX that can be a global install or the `node_modules/.bin/pi` link of an `npm install --prefix` one. Otherwise put the npm installation's bin directory first on `PATH` for `npm run check` and `npm test`, and verify it with `command -v pi` on POSIX or `where pi` on Windows. Keep the development host npm-based, and use `PI_CLAUDE_CODE_PROVIDER_PI_BIN` only to select a standalone executable for the live bridge lane. The resolver finds the package that owns the `pi` executable at any CLI depth and checks package identities. Resolving an installation does not establish version compatibility: if its exported modules have missing dependencies, use an isolated npm installation of the verified Pi version rather than modifying the global install.
 
 To load a local checkout:
 
@@ -92,7 +92,7 @@ The runner gives Pi a temporary agent directory and disables automatic extension
 
 Run paid stages one at a time. `model-matrix.js` checks for leaked private directories by diffing the whole temporary root, so another provider request running at the same time reads as a leak.
 
-`PI_CLAUDE_CODE_PROVIDER_PI_BIN` selects which Pi executable the live scripts launch; without it they launch the npm-hosted CLI entry. This is deliberately separate from package resolution, so one npm-hosted development host can drive both distributions. `bridge-standalone` refuses to start unless that variable is set; point it at an extracted tar.gz `pi`.
+`PI_CLAUDE_CODE_PROVIDER_PI_BIN` selects which Pi executable the live scripts launch; without it they launch the CLI entry of the development Pi described under Setup. This is deliberately separate from package resolution, so one npm-hosted development host can drive both distributions. `bridge-standalone` refuses to start unless that variable is set; point it at an extracted tar.gz `pi`.
 
 Both bridge lanes are required, and `test:paid:release` runs both. A `--no-tools` turn passes even when the proposal bridge never starts, so only a turn that actually round-trips a tool distinguishes a working bridge from a broken one. `/pi-claude-code-provider-doctor` performs the same handshake without consuming quota.
 
