@@ -8,10 +8,11 @@ const MARKER_SCHEMA = "pi-claude-code-provider-runtime-v1";
 const MINIMUM_STALE_AGE_MS = 60 * 60_000;
 const MAX_CLEANUP_CANDIDATES = 256;
 
-export type RuntimeDirectoryKind = "provider_request" | "web_search_request" | "web_search_output";
+export type RuntimeDirectoryKind = "provider_request" | "provider_image_store" | "web_search_request" | "web_search_output";
 
 const PREFIXES: Record<RuntimeDirectoryKind, string> = {
   provider_request: "pi-claude-code-provider-request-",
+  provider_image_store: "pi-claude-code-provider-images-",
   web_search_request: "pi-claude-code-provider-search-",
   web_search_output: "pi-claude-code-provider-search-output-",
 };
@@ -95,9 +96,29 @@ export async function cleanupStaleRuntimeDirectories(
   } catch {
     return { removed: 0, failures: 1 };
   }
-  const candidates = entries
-    .filter((entry) => entry.isDirectory() && runtimeKind(entry.name) !== undefined)
-    .slice(0, Math.max(0, maxCandidates));
+  const eligible = entries.filter((entry) => entry.isDirectory() && runtimeKind(entry.name) !== undefined);
+  const candidates = eligible.slice(0, Math.max(0, maxCandidates));
+  // An image store is shared by its owner's requests. If an uncertain-live
+  // Claude child still owns a retained request directory, reclaiming the image
+  // store would remove files that child may still read. Scan the whole bounded
+  // candidate set before deleting anything, because the request can sort after
+  // the store. When the scan is truncated, retain image stores conservatively.
+  const candidateScanTruncated = eligible.length > candidates.length;
+  const ownersWithLiveProviderChildren = new Set<number>();
+  if (!candidateScanTruncated && candidates.some((entry) => runtimeKind(entry.name) === "provider_image_store")) {
+    for (const entry of candidates) {
+      if (runtimeKind(entry.name) !== "provider_request") continue;
+      const directory = join(temporaryRoot, entry.name);
+      try {
+        const info = await lstat(directory);
+        if (!info.isDirectory() || info.uid !== currentUid) continue;
+        const marker = await readMarker(directory);
+        if (marker?.kind === "provider_request" && marker.childPid !== undefined && processAlive(marker.childPid)) {
+          ownersWithLiveProviderChildren.add(marker.ownerPid);
+        }
+      } catch { /* An unreadable request is left to the ordinary cleanup pass. */ }
+    }
+  }
   let removed = 0;
   let failures = 0;
   for (const entry of candidates) {
@@ -108,6 +129,7 @@ export async function cleanupStaleRuntimeDirectories(
       const marker = await readMarker(directory);
       const kind = runtimeKind(entry.name);
       if (!marker || marker.kind !== kind) continue;
+      if (kind === "provider_image_store" && (candidateScanTruncated || ownersWithLiveProviderChildren.has(marker.ownerPid))) continue;
       const createdAt = Date.parse(marker.createdAt);
       if (!Number.isFinite(createdAt) || now - createdAt < minimumAgeMs) continue;
       if (processAlive(marker.ownerPid) || (marker.childPid !== undefined && processAlive(marker.childPid))) continue;

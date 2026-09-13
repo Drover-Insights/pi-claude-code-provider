@@ -20,6 +20,7 @@ import { createOutput } from "./output.ts";
 import { claimPaidTestLaunch } from "./paid-launch-budget.ts";
 import { ProcessTerminationError, superviseProcess } from "./process-utils.ts";
 import { removeRuntimeDirectory } from "./runtime-directories.ts";
+import { SessionImageStore, type ImageStoreLease } from "./session-image-store.ts";
 import type { RateLimitNoticeSink } from "./claude-protocol.ts";
 import { ClaudeEventMapper, type ClaudeTerminationCause } from "./stream-events.ts";
 import type { ClaudeInstallation, LogicalProviderPayload, MutableOutput, RequestMetrics } from "./types.ts";
@@ -43,6 +44,7 @@ export interface ClaudeStreamDependencies {
    * Claude Code reports to the model is the one Pi's tools resolve against.
    */
   workingDirectory?: () => string | undefined;
+  imageStore?: SessionImageStore;
 }
 
 export function createClaudeStream(
@@ -53,6 +55,7 @@ export function createClaudeStream(
   const onRateLimitNotice = dependencies.onRateLimitNotice;
   const claimLaunch = dependencies.claimLaunch ?? claimPaidTestLaunch;
   const supervise = dependencies.supervise ?? superviseProcess;
+  const imageStore = dependencies.imageStore;
   return (model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream => {
     const stream = createAssistantMessageEventStream();
     // Read once, when Pi starts the request: a session switch during asynchronous
@@ -64,6 +67,7 @@ export function createClaudeStream(
       const startedAt = Date.now();
       const effort = options?.reasoning ?? "medium";
       let prepared: Awaited<ReturnType<typeof prepareRequest>> | undefined;
+      let imageLease: ImageStoreLease | undefined;
       let claude: ClaudeProcess | undefined;
       let cwd: string | undefined;
       let toolUse = false;
@@ -151,6 +155,8 @@ export function createClaudeStream(
         } catch {
           errorCategory ??= "cleanup";
         }
+        imageLease?.release(processLivenessUnknown);
+        if (processLivenessUnknown && prepared?.imageStoreDirectory) metrics.cleanupComplete = false;
         metrics.durationMs = Date.now() - startedAt;
         metrics.resolvedModel = output.responseModel;
         metrics.servedContextWindow = mapper?.contextWindow;
@@ -181,6 +187,7 @@ export function createClaudeStream(
         const effectiveContext = await applyPayloadHook(model, context, options);
         metrics.lastPhase = "payload_applied";
         cwd = await requireWorkingDirectory(sessionCwd);
+        imageLease = imageStore?.acquire();
         metrics.messageCount = effectiveContext.messages.length;
         metrics.toolCount = effectiveContext.tools?.length ?? 0;
         const systemPromptBytes = Buffer.byteLength(effectiveContext.systemPrompt ?? "");
@@ -191,7 +198,7 @@ export function createClaudeStream(
         const systemPromptTokens = estimateTransportTokens(0, 0, systemPromptBytes, 0);
         metrics.estimatedInputTokens = systemPromptTokens;
         validateSystemPromptBudget(model, systemPromptTokens, maxOutputTokens);
-        prepared = await prepareRequest(effectiveContext);
+        prepared = await prepareRequest(effectiveContext, imageLease);
         metrics.cleanupComplete = false;
         metrics.lastPhase = "prepared";
         const estimatedInputTokens = estimateTransportTokens(
@@ -232,7 +239,7 @@ export function createClaudeStream(
           onToolUse: stopForToolUse,
           onRateLimitNotice,
           onResponseAnnouncement: announceResponse,
-          privatePaths: [prepared.directory],
+          privatePaths: [prepared.directory, ...(prepared.imageStoreDirectory ? [prepared.imageStoreDirectory] : [])],
         });
 
         // Phase 2 — claim the launch, spawn Claude, and record exact ownership.
@@ -248,6 +255,7 @@ export function createClaudeStream(
             ...(prepared.catalogPath ? { PI_CLAUDE_TOOL_CATALOG: prepared.catalogPath } : {}),
           },
           directory: prepared.directory,
+          privatePaths: prepared.imageStoreDirectory ? [prepared.imageStoreDirectory] : [],
           cwd,
           stdin: "pipe",
           idleTimeoutMs,
@@ -361,7 +369,7 @@ export function createClaudeStream(
                 "Security invariant violated: Claude Code attempted to execute a Pi proposal tool internally",
               ),
             );
-          } else if (containsPrivateTransportToolArgument(output, prepared.directory)) {
+          } else if (containsPrivateTransportToolArgument(output, [prepared.directory, ...(prepared.imageStoreDirectory ? [prepared.imageStoreDirectory] : [])])) {
             errorCategory = "private_transport";
             mapper.fail(
               await failureAfterCleanup("Claude Code proposed a Pi tool call against provider-private transport state"),
@@ -654,9 +662,9 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-function containsPrivateTransportToolArgument(output: MutableOutput, directory: string): boolean {
+function containsPrivateTransportToolArgument(output: MutableOutput, directories: readonly string[]): boolean {
   return output.content.some(
-    (block) => block.type === "toolCall" && containsPrivateTransportPath(block.arguments, directory),
+    (block) => block.type === "toolCall" && directories.some((directory) => containsPrivateTransportPath(block.arguments, directory)),
   );
 }
 

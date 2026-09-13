@@ -7,6 +7,7 @@ import test from "node:test";
 import { Type } from "typebox";
 import { prepareRequest, prepareRequestWithLimits } from "../../src/context-serializer.ts";
 import { needsBunConfig } from "../../src/host-runtime.ts";
+import { SessionImageStore } from "../../src/session-image-store.ts";
 
 const transcript = (prepared) => prepared.transcriptBlocks.join("\n");
 
@@ -330,7 +331,7 @@ function assistantMessage(content, stopReason = "stop") {
     };
 }
 
-test("stops attaching an earlier turn's image while keeping its transcript record", async () => {
+test("retains an earlier turn's image and append-stable transcript record", async () => {
     const imageTurn = { role: "user", content: [{ type: "text", text: "first screenshot" }, pixels("old image")], timestamp: 1 };
     const current = await prepareRequest({ messages: [imageTurn] });
     const later = await prepareRequest({
@@ -338,9 +339,8 @@ test("stops attaching an earlier turn's image while keeping its transcript recor
     });
     try {
         assert.deepEqual(current.attachmentPaths.map((path) => basename(path)), [imageName("old image")]);
-        assert.deepEqual(later.attachmentPaths, []);
-        assert.equal(later.imageBytes, 0);
-        assert.deepEqual((await readdir(later.directory)).filter((name) => name.startsWith("image-")), []);
+        assert.deepEqual(later.attachmentPaths.map((path) => basename(path)), [imageName("old image")]);
+        assert.equal(later.imageBytes, Buffer.byteLength("old image"));
         // The record is unchanged, so the history prefix the earlier request cached still matches.
         assert.deepEqual(later.transcriptBlocks.slice(0, current.transcriptBlocks.length), current.transcriptBlocks);
     }
@@ -349,7 +349,34 @@ test("stops attaching an earlier turn's image while keeping its transcript recor
     }
 });
 
-test("attaches images from the latest user message and the tool results after it", async () => {
+test("session image store reattaches an answered image at the same private path", async () => {
+    const store = new SessionImageStore();
+    store.open();
+    const firstLease = store.acquire();
+    const laterLease = store.acquire();
+    let first;
+    let later;
+    try {
+        const imageTurn = { role: "user", content: [{ type: "text", text: "look left" }, pixels("historic image")], timestamp: 1 };
+        first = await prepareRequest({ messages: [imageTurn] }, firstLease);
+        later = await prepareRequest({
+            messages: [imageTurn, assistantMessage([{ type: "text", text: "left side seen" }]), { role: "user", content: "look right", timestamp: 3 }],
+        }, laterLease);
+        const stablePath = join(first.imageStoreDirectory, imageName("historic image"));
+        assert.notEqual(first.directory, later.directory);
+        assert.deepEqual(first.attachmentPaths, [stablePath]);
+        assert.deepEqual(later.attachmentPaths, [stablePath]);
+        assert.equal((await readFile(stablePath)).toString(), "historic image");
+        assert.deepEqual(later.transcriptBlocks.slice(0, first.transcriptBlocks.length), first.transcriptBlocks);
+    } finally {
+        firstLease.release();
+        laterLease.release();
+        await Promise.all([first?.directory, later?.directory].filter(Boolean).map((directory) => rm(directory, { recursive: true, force: true })));
+        await store.close();
+    }
+});
+
+test("attaches historical, current, and tool-result images", async () => {
     const prepared = await prepareRequest({
         messages: [
             { role: "user", content: [pixels("old")], timestamp: 1 },
@@ -360,7 +387,7 @@ test("attaches images from the latest user message and the tool results after it
         ],
     });
     try {
-        assert.deepEqual(prepared.attachmentPaths.map((path) => basename(path)), [imageName("current"), imageName("tool result")]);
+        assert.deepEqual(prepared.attachmentPaths.map((path) => basename(path)), [imageName("old"), imageName("current"), imageName("tool result")]);
     }
     finally {
         await rm(prepared.directory, { recursive: true, force: true });
@@ -392,8 +419,7 @@ test("attaches a tool-result image when steering arrives before the next reply",
         ],
     });
     try {
-        // The first image was answered by the tool call; the tool result's was not.
-        assert.deepEqual(prepared.attachmentPaths.map((path) => basename(path)), [imageName("tool result")]);
+        assert.deepEqual(prepared.attachmentPaths.map((path) => basename(path)), [imageName("answered"), imageName("tool result")]);
     }
     finally {
         await rm(prepared.directory, { recursive: true, force: true });
@@ -427,20 +453,14 @@ test("rejects a non-boolean redacted flag and a non-string image MIME type", asy
     );
 });
 
-test("counts only attached images toward the image limits", async () => {
-    const prepared = await prepareRequest({
+test("counts historical images toward the 20-image limit", async () => {
+    await assert.rejects(prepareRequest({
         messages: [
             { role: "user", content: Array.from({ length: 21 }, (_, index) => pixels(`old ${index}`)), timestamp: 1 },
             assistantMessage([{ type: "text", text: "seen" }]),
             { role: "user", content: [pixels("current")], timestamp: 3 },
         ],
-    });
-    try {
-        assert.deepEqual(prepared.attachmentPaths.map((path) => basename(path)), [imageName("current")]);
-    }
-    finally {
-        await rm(prepared.directory, { recursive: true, force: true });
-    }
+    }), (error) => error.code === "image_count" && /At most 20 images/.test(error.message));
 });
 
 test("attaches images by absolute path under a temp root with spaces, and refuses a root containing a double quote", { skip: process.platform === "win32" }, async () => {

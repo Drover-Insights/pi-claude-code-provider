@@ -17,6 +17,7 @@ export interface ClaudeAuthStatus {
 
 export interface PreparedRequest {
   directory: string;
+  imageStoreDirectory?: string;
   transcriptBlocks: string[];
   attachmentPaths: string[];
   systemPromptPath: string;

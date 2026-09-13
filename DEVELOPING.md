@@ -85,10 +85,12 @@ The runner gives Pi a temporary agent directory and disables automatic extension
 | `npm run test:paid:full` | 28 |
 | `npm run test:paid:cache` | 3 |
 | `npm run test:paid:cache-haiku` | 3 |
+| `npm run test:paid:cache-images` | 3 |
+| `npm run test:paid:cache-images-haiku` | 3 |
 | `npm run test:paid:fable` | 1 |
 | `npm run test:paid:opus` | 1 |
 | `npm run test:paid:matrix` | 15 |
-| `npm run test:paid:release` | 55 |
+| `npm run test:paid:release` | 61 |
 
 Run paid stages one at a time. `model-matrix.js` checks for leaked private directories by diffing the whole temporary root, so another provider request running at the same time reads as a leak.
 
@@ -111,12 +113,14 @@ Preserve these when changing serialization or Claude arguments:
 - **Append-stable history.** Each request serializes the complete current transcript as append-stable history blocks with a sorted tool catalog. Never rewrite unchanged history.
 - **The token-reminder pin.** Keep `totalTokensReminder: "off"` in the pinned settings; Claude Code otherwise appends a changing `<total_tokens>` reminder that breaks reuse across fresh print-mode processes. The setting is undocumented and follows [bcherny's maintainer guidance](https://github.com/anthropics/claude-code/issues/81259#issuecomment-5311888970), so do not remove it without a replacement cache probe and new upstream guidance.
 - **The transcript breakpoint.** `providerArgs` marks the last history block with `ttl: "1h"`, because Claude Code places no breakpoint inside the replayed history. The TTL is load-bearing: the API's longest-TTL-first ordering rejects a shorter one ahead of Claude Code's own markers. The API allows four breakpoints, and a fifth from any source fails every request, so count them with the capture below before adding one. `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT=off` is the user-facing escape hatch for that failure, not a substitute for the release gate.
-- **Attachments.** Attach only images Claude has not yet replied to, keep answered images' transcript records unchanged, and never drop an image before an assistant reply follows it. [DESIGN.md](DESIGN.md#request-and-transcript-transport) explains why.
+- **Attachments.** Keep every image in the effective Pi context attached, including after a reply, at a content-addressed path stable for the Pi session. Preserve transcript records and generated attachment order. A changing private path ahead of the transcript can defeat reuse. [DESIGN.md](DESIGN.md#request-and-transcript-transport) explains why.
 - **Records per request.** Keep the records appended between requests under the ceiling described in DESIGN.md.
 
 `npm run capture:claude-breakpoints` checks the request shape without spending quota. It builds a request from the provider's own `providerArgs` and `buildClaudeEnvironment`, captures it against a loopback server with a dummy token, and prints the breakpoint table, the first block that differs between two captures in different private directories, and a verdict; it exits non-zero unless the shape is healthy. Like the provider, it runs Claude in a project directory: a disposable git repository with a configured clean filter and a same-size edit to the filtered file. The verdict is also BROKEN if that filter runs, a project file changes, Claude Code reports no working directory or one other than the project, the private request directory reaches the model outside attachment narration, or the proposal bridge is not ready. `--claude` selects a build, `--model` an alias and `--effort` its effort level, `--strip-marker` gives the control arm without editing `src/`, `--images` and `--no-tools` vary the payload, and `--output` writes the last captured request body to a file. Run it against every new Claude Code build before trusting the rules above.
 
 `test:paid:cache` runs on `sonnet:low` and `test:paid:cache-haiku` on `haiku:low`. Both are required: Haiku receives Claude Code's environment block ahead of the transcript, so a varying block there breaks Haiku while Sonnet still passes. Each reuse turn must reach 80% cache hits and write less than a quarter of turn 1's cache write, so a large stable system prompt cannot hide a rewritten transcript. Haiku 4.5 caches nothing below 4096 tokens, so keep the probe's padding above that. The padding starts with a per-run nonce; its turns are otherwise identical between runs, so without one a warm entry from an earlier run could satisfy turn 2 while reuse inside the run is broken.
+
+`test:paid:cache-images` and `test:paid:cache-images-haiku` apply the same hit and write bounds on Sonnet and Haiku while asking three different questions about one image attached only on turn 1. Correct answers on turns 2 and 3 prove Claude can re-inspect a historical image; the usage bounds prove stable attachment paths preserve cache reuse. These stages are blocking in `test:paid:release`.
 
 `PI_CLAUDE_CODE_PROVIDER_CACHE_MODEL` points the `cache` stage at another alias. The probe's exact-reply assertions are written for Sonnet and Haiku, so on another alias read the reported error first and use `npm run capture:claude-breakpoints` for the request shape.
 

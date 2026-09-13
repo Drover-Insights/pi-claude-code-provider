@@ -8,9 +8,9 @@
 // provider's own providerArgs and buildClaudeEnvironment, so this follows the
 // provider instead of drifting from a hand-rebuilt copy of it.
 //
-// Two captures are taken, in different private request directories. That is what
-// separates the two ways caching fails: a transcript with no breakpoint of its
-// own, and a breakpoint that survives behind a block which changes every request.
+// Two captures are taken with different private request directories but the
+// same session image store. That separates a missing transcript breakpoint
+// from a changing prefix caused by request paths or attachment references.
 // A single capture cannot tell them apart.
 //
 // Like the provider, Claude runs in a project directory rather than the private
@@ -36,6 +36,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { claudeExecutable, buildClaudeEnvironment } from "../src/auth.ts";
 import { providerArgs } from "../src/claude-args.ts";
+import { SessionImageStore } from "../src/session-image-store.ts";
 
 // Anthropic permits four cache breakpoints per request. A fifth is rejected
 // outright, so this is a hard ceiling rather than a quality signal.
@@ -152,20 +153,21 @@ async function snapshotTree(root) {
   return files;
 }
 
-async function captureOnce(options, executable, home, project) {
+async function captureOnce(options, executable, home, project, imageStore) {
   const { server, body, listening, port } = captureServer();
   await listening;
   const baseUrl = `http://127.0.0.1:${port()}`;
-  // Mirror the provider: a fresh private directory per request, holding the
-  // system prompt, the catalog, and any generated attachments.
+  // Mirror the provider: a fresh private request directory holds the system
+  // prompt and catalog, while generated images use session-stable paths.
   const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-request-"));
+  const imageLease = imageStore.acquire();
   try {
     await writeFile(join(directory, "system-prompt.txt"), SYSTEM_PROMPT);
     await writeFile(join(directory, "tools.json"), JSON.stringify(CATALOG));
     const attachmentPaths = [];
     for (let index = 0; index < options.images; index++) {
-      const path = join(directory, `image-${index}.png`);
-      await writeFile(path, PNG);
+      const name = `image-${createHash("sha256").update(PNG).digest("hex")}.png`;
+      const path = await imageLease.put(name, PNG);
       attachmentPaths.push(path);
     }
     const prepared = {
@@ -210,6 +212,7 @@ async function captureOnce(options, executable, home, project) {
     return { body: redact(JSON.parse(captured)), prompt, directory, bridgeReady };
   } finally {
     server.close();
+    imageLease.release();
     await rm(directory, { recursive: true, force: true });
   }
 }
@@ -249,7 +252,7 @@ function report(captures, options, startup) {
   const marked = blocks.flatMap(([label, block], position) => (block.cache_control ? [{ position, label, block }] : []));
   // The last breakpoint inside the transcript marks the prefix a later request
   // reuses. Only a change at or ahead of it invalidates that entry; the
-  // attachment list after it varies by design.
+  // attachment list after it varies only when the effective image set changes.
   const transcriptBreakpoint = marked.filter(({ position }) => position >= first && position <= last).at(-1)?.position ?? -1;
   console.log(`breakpoints:    ${marked.length} of ${MAX_BREAKPOINTS} permitted`);
   for (const { position, label, block } of marked) {
@@ -313,6 +316,8 @@ function report(captures, options, startup) {
 
 const options = parseOptions(process.argv.slice(2));
 const executable = options.claude ?? claudeExecutable();
+const imageStore = new SessionImageStore();
+imageStore.open();
 const home = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-capture-home-"));
 const markerRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-capture-marker-"));
 let captures;
@@ -322,8 +327,8 @@ try {
   fixture = await createProjectFixture(markerRoot);
   const before = await snapshotTree(fixture.project);
   captures = [
-    await captureOnce(options, executable, home, fixture.project),
-    await captureOnce(options, executable, home, fixture.project),
+    await captureOnce(options, executable, home, fixture.project, imageStore),
+    await captureOnce(options, executable, home, fixture.project, imageStore),
   ];
   const after = await snapshotTree(fixture.project);
   startup = {
@@ -333,6 +338,7 @@ try {
     changedFiles: [...new Set([...before.keys(), ...after.keys()])].filter((name) => before.get(name) !== after.get(name)),
   };
 } finally {
+  await imageStore.close();
   await Promise.all([home, markerRoot, fixture?.project].filter(Boolean).map((path) => rm(path, { recursive: true, force: true })));
 }
 const healthy = report(captures, options, startup);

@@ -15,6 +15,7 @@ import { formatDoctorSummary, probeBridge } from "../src/doctor.ts";
 import { flushMetricsLog, getLastRequestMetrics, getLastSearchMetrics, getMetricsLogError } from "../src/metrics.ts";
 import { createClaudeStream } from "../src/provider.ts";
 import { cleanupStaleRuntimeDirectories, createRuntimeDirectory } from "../src/runtime-directories.ts";
+import { SessionImageStore } from "../src/session-image-store.ts";
 import { searchWithClaude } from "../src/web-search.ts";
 import type { RateLimitNotice } from "../src/claude-protocol.ts";
 import type { RuntimeCleanupResult } from "../src/runtime-directories.ts";
@@ -39,6 +40,7 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
   const providerModels = providerModelsForSubscription(installation.subscriptionType);
   const currentPlatform = platformStatus();
   const searchOutputs = createSearchOutputOwner();
+  const imageStore = new SessionImageStore();
   let searchRegistrationAttempted = false;
   let activeRateLimitNotify: ((notice: RateLimitNotice) => void) | undefined;
   // Pi's session directory, not process.cwd(): a resumed session takes its cwd
@@ -54,11 +56,13 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
     streamSimple: createClaudeStream(installation, {
       onRateLimitNotice: (notice) => activeRateLimitNotify?.(notice),
       workingDirectory: () => sessionCwd,
+      imageStore,
     }),
   });
 
   pi.on("session_start", (_event, ctx) => {
     searchOutputs.open();
+    imageStore.open();
     sessionCwd = ctx.cwd;
     // The provider starts a process per tool round-trip; session scope prevents
     // Claude's repeated notice from surfacing throughout one Pi turn.
@@ -80,7 +84,7 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
     activeRateLimitNotify = undefined;
     sessionCwd = undefined;
     try {
-      await searchOutputs.close();
+      await Promise.all([searchOutputs.close(), imageStore.close()]);
     } finally {
       await flushMetricsLog();
     }

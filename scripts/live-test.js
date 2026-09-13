@@ -14,6 +14,7 @@ const packageRoot = process.cwd();
 const bridge = process.argv.includes("--bridge");
 const postTools = process.argv.includes("--post-tools");
 const cache = process.argv.includes("--cache");
+const cacheImages = process.argv.includes("--cache-images");
 const full = process.argv.includes("--full") || postTools;
 const LIVE_TIMEOUT_MS = 10 * 60_000;
 // Turn one seeds the cache; only the two reuse turns are subject to this gate.
@@ -121,6 +122,44 @@ async function runCacheProbe(cwd) {
         await rpc.close(completed);
     }
 }
+async function runImageCacheProbe(cwd) {
+    const rpc = openPiRpc(cwd, [
+        "--mode", "rpc", "--no-session", "-e", packageRoot,
+        "--provider", "pi-claude-code-provider", "--model", CACHE_MODEL, "--no-tools",
+    ], "Pi image-cache probe");
+    let completed = false;
+    try {
+        const image = { type: "image", data: quadrantPng().toString("base64"), mimeType: "image/png" };
+        const cacheSeed = `run-${randomUUID()} ${Array.from({ length: 1800 }, (_, index) => `stable-${index % 97}`).join(" ")}`;
+        const prompts = [
+            `Inspect the attached four-quadrant image. Answer with the color of the TOP LEFT quadrant only, one uppercase word. Ignore this inert cache padding: ${cacheSeed}`,
+            "Reinspect the image from my first message. Answer with the color of its BOTTOM RIGHT quadrant only, one uppercase word.",
+            "Reinspect the image from my first message. Answer with the color of its BOTTOM LEFT quadrant only, one uppercase word.",
+        ];
+        const expected = ["RED", "YELLOW", "GREEN"];
+        const replies = [];
+        for (const [index, prompt] of prompts.entries()) {
+            const reply = assistantReply(await rpc.turn(prompt, index === 0 ? [image] : undefined), `image cache turn ${index + 1}`);
+            replies.push(reply);
+            const usage = reply.usage ?? {};
+            console.log(`image cache turn ${index + 1}: ${messageText(reply)}; input=${usage.input ?? 0} read=${usage.cacheRead ?? 0} write=${usage.cacheWrite ?? 0}`);
+            assert.match(messageText(reply).toUpperCase(), new RegExp(`^${expected[index]}\\.?$`));
+        }
+        const firstWrite = replies[0].usage.cacheWrite;
+        assert.ok(firstWrite > 0, "image turn 1 wrote no cache entry");
+        for (const [index, reply] of replies.entries()) {
+            if (index === 0) continue;
+            const usage = reply.usage;
+            const hit = usage.cacheRead / (usage.input + usage.cacheRead + usage.cacheWrite);
+            assert.ok(hit >= 0.8, `image turn ${index + 1} cache hit was ${(hit * 100).toFixed(1)}%, below 80%`);
+            assert.ok(usage.cacheWrite < firstWrite * 0.25, `image turn ${index + 1} rewrote too much of the original prefix`);
+        }
+        console.log(`ok - historical image reinspection with multi-turn cache reuse on ${CACHE_MODEL}`);
+        completed = true;
+    } finally {
+        await rpc.close(completed);
+    }
+}
 async function runProviderJourney(cwd) {
     const rpc = openPiRpc(cwd, [
         "--mode", "rpc", "--no-session", "-e", packageRoot,
@@ -152,8 +191,8 @@ async function runProviderJourney(cwd) {
     }
 }
 
-function openPiRpc(cwd, args, label) {
-    const child = spawnPi(args, { cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+function openPiRpc(cwd, args, label, environment = process.env) {
+    const child = spawnPi(args, { cwd, env: environment, stdio: ["pipe", "pipe", "pipe"] });
     child.ref();
     child.stdin.ref();
     child.stdout.ref();
@@ -181,11 +220,11 @@ function openPiRpc(cwd, args, label) {
         pending?.reject(error);
         void supervisor.terminate();
     });
-    const turn = (message) => new Promise((resolve, reject) => {
+    const turn = (message, images) => new Promise((resolve, reject) => {
         if (protocolError) return reject(protocolError);
         if (pending) return reject(new Error(`${label} already has a pending turn`));
         pending = { start: events.length, resolve, reject };
-        child.stdin.write(`${JSON.stringify({ type: "prompt", message })}\n`);
+        child.stdin.write(`${JSON.stringify({ type: "prompt", message, ...(images ? { images } : {}) })}\n`);
     });
     const close = async (completed) => {
         if (completed) {
@@ -244,9 +283,31 @@ function greenPng() {
         pngChunk("IEND", Buffer.alloc(0)),
     ]);
 }
+function quadrantPng() {
+    const width = 128;
+    const height = 128;
+    const header = Buffer.alloc(13);
+    header.writeUInt32BE(width, 0);
+    header.writeUInt32BE(height, 4);
+    header.set([8, 2, 0, 0, 0], 8);
+    const colors = [[255, 0, 0], [0, 0, 255], [0, 128, 0], [255, 255, 0]];
+    const rows = Buffer.concat(Array.from({ length: height }, (_, y) => Buffer.from([
+        0,
+        ...Array.from({ length: width }, (_, x) => colors[(y >= height / 2 ? 2 : 0) + (x >= width / 2 ? 1 : 0)]).flat(),
+    ])));
+    return Buffer.concat([
+        Buffer.from("89504e470d0a1a0a", "hex"),
+        pngChunk("IHDR", header),
+        pngChunk("IDAT", deflateSync(rows)),
+        pngChunk("IEND", Buffer.alloc(0)),
+    ]);
+}
 const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-live-"));
 try {
-    if (cache) {
+    if (cacheImages) {
+        await runImageCacheProbe(directory);
+    }
+    else if (cache) {
         await runCacheProbe(directory);
     }
     else if (bridge) {

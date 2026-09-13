@@ -44,6 +44,7 @@ test("removes only old runtime directories whose recorded processes are gone", a
   const now = Date.now();
   try {
     const stale = await createRuntimeDirectory("provider_request", { temporaryRoot: root, ownerPid: 301, now: now - 2 * HOUR });
+    const staleImages = await createRuntimeDirectory("provider_image_store", { temporaryRoot: root, ownerPid: 307, now: now - 2 * HOUR });
     // The web_search_output prefix nests inside the web_search_request prefix,
     // so this directory is only reclaimed when its kind is resolved by the
     // longest matching prefix rather than the first one.
@@ -58,8 +59,9 @@ test("removes only old runtime directories whose recorded processes are gone", a
       now,
       processAlive: (pid) => pid === 302 || pid === 304,
     });
-    assert.deepEqual(removed, { removed: 2, failures: 0 });
+    assert.deepEqual(removed, { removed: 3, failures: 0 });
     await assert.rejects(access(stale));
+    await assert.rejects(access(staleImages));
     await assert.rejects(access(staleOutput));
     await Promise.all([activeOwner, activeChild, young].map((directory) => access(directory)));
   } finally {
@@ -94,6 +96,23 @@ test("leaves unowned, unmarked, diagnostic, symlinked, and out-of-budget candida
       processAlive: () => false,
     }), { removed: 0, failures: 0 });
     await Promise.all([valid, unmarked, malformed, diagnostic, outside, linked].map((directory) => access(directory)));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("retains a stale session image store while an owned request child may be alive", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-runtime-image-child-test-"));
+  const now = Date.now();
+  try {
+    const images = await createRuntimeDirectory("provider_image_store", { temporaryRoot: root, ownerPid: 501, now: now - 2 * HOUR });
+    const request = await createRuntimeDirectory("provider_request", { temporaryRoot: root, ownerPid: 501, now: now - 2 * HOUR });
+    await recordRuntimeChild(request, 502);
+    const options = { temporaryRoot: root, currentUid: (await lstat(root)).uid, now };
+    assert.deepEqual(await cleanupStaleRuntimeDirectories({ ...options, processAlive: (pid) => pid === 502 }), { removed: 0, failures: 0 });
+    await Promise.all([images, request].map((directory) => access(directory)));
+    assert.deepEqual(await cleanupStaleRuntimeDirectories({ ...options, processAlive: () => false }), { removed: 2, failures: 0 });
+    await Promise.all([images, request].map((directory) => assert.rejects(access(directory))));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

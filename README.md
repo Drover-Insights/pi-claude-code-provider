@@ -78,7 +78,7 @@ Rate-limit warnings and reset times appear as Pi notifications when Claude provi
 
 Claude Code's public headless protocol cannot accept arbitrary historical assistant and tool-result messages, so the provider sends Pi's complete current history as an append-stable semantic transcript on every request. Pi remains authoritative for branching, compaction, reloads, and provider handoff; the transport is not wire-equivalent to Anthropic's Messages API, consumes additional context, and sets one cache breakpoint of its own, on the last history block. That breakpoint uses a one-hour TTL, which the API's breakpoint ordering requires and which doubles the cache-write rate over the five-minute default; cache keys remain Claude's.
 
-A request that attaches an image gets no prompt-cache reuse, so the provider attaches an image only until Claude has replied to it. After that the image stays in the transcript as a record but is not shown to Claude again, so Claude cannot re-inspect it and relies on the earlier conversation about it; caching resumes from the request after your next prompt. Tool round trips within an image-bearing turn remain uncached. [DESIGN.md](DESIGN.md#request-and-transcript-transport) gives the exact rule and the reasons.
+Images remain available to Claude throughout the current Pi context, including after Claude has replied to them. The provider reuses a private, session-stable image path so later image-bearing turns can reuse a cached prompt prefix. Adding an image or changing the context may still cause a cold write; each request retains the 20-image and byte limits. [DESIGN.md](DESIGN.md#request-and-transcript-transport) explains the transport.
 
 ## Configuration
 

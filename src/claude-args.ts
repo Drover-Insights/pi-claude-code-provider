@@ -84,11 +84,9 @@ export function providerArgs(
   const imageInstruction = imageRefs
     ? ` Generated image attachments for image_attachment blocks: ${imageRefs}.`
     : "";
-  // Keep the attachment list after unchanged history and outside the breakpoint,
-  // so it cannot invalidate the prefix this provider caches. That does not make
-  // an image-bearing request cacheable: Claude Code narrates its own attachment
-  // read ahead of the transcript, which is why prepareRequest attaches only the
-  // images Claude has not yet replied to.
+  // Keep the attachment list after unchanged history and outside the breakpoint.
+  // Claude Code narrates image reads ahead of the transcript, so the paths must
+  // also stay stable across requests for that earlier prefix to be reusable.
   const markedBlock = options.transcriptBreakpoint === false ? -1 : prepared.transcriptBlocks.length - 1;
   const prompt: PromptBlock[] = [
     ...prepared.transcriptBlocks.map((text, index) => ({

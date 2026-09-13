@@ -19,6 +19,8 @@ export interface ClaudeProcessOptions {
    * stderr redaction, and the child's cwd unless `cwd` is given.
    */
   directory: string;
+  /** Additional provider-private paths included in diagnostics redaction. */
+  privatePaths?: readonly string[];
   /**
    * The child's cwd. Provider requests pass Pi's session directory, because
    * Claude Code reports its cwd to the model as the primary working directory.
@@ -114,7 +116,7 @@ export function spawnClaudeProcess(options: ClaudeProcessOptions): ClaudeProcess
     child,
     supervisor,
     recordOwnership: () => recordRuntimeChild(options.directory, child.pid ?? 0),
-    stderrExcerpt: () => stderrExcerpt(stderr, [options.directory]),
+    stderrExcerpt: () => stderrExcerpt(stderr, [options.directory, ...(options.privatePaths ?? [])]),
     terminate,
     terminateInBackground,
     isTerminationFailure: (error) => terminationFailure !== undefined && error === terminationFailure,
