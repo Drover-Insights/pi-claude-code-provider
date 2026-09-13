@@ -12,7 +12,7 @@ npm test
 
 Do not run `npm install` at the repository root. The package has no installed dependencies and must not contain root `node_modules` or a root lockfile. `setup:dev` installs the isolated, locked `tooling/` package containing the TypeScript parser/compiler and Node declarations used by source-policy checks and typechecking. Its ignored `node_modules/` is generated development state, not published runtime code. Pi loads the TypeScript extension directly; there is no runtime build.
 
-When npm and standalone Pi installations coexist, development uses whichever `pi` resolves first on `PATH`. Put the npm installation's bin directory first for `npm run check` and `npm test`; verify it with `command -v pi` on POSIX or `where pi` on Windows. Keep the development host npm-based, and use `PI_CLAUDE_CODE_PROVIDER_PI_BIN` only to select a standalone executable for the live bridge lane. The resolver recognizes both `dist/cli.js` and `dist/bundle/cli.js` npm layouts and checks package identities. Resolving a newer layout does not establish version compatibility: if that installation's exported modules have missing dependencies, use an isolated npm installation of the verified Pi version rather than modifying the global install.
+When npm and standalone Pi installations coexist, development uses whichever `pi` resolves first on `PATH`. Put the npm installation's bin directory first for `npm run check` and `npm test`; verify it with `command -v pi` on POSIX or `where pi` on Windows. Keep the development host npm-based, and use `PI_CLAUDE_CODE_PROVIDER_PI_BIN` only to select a standalone executable for the live bridge lane. The resolver finds the package that owns the `pi` executable at any CLI depth and checks package identities. Resolving an installation does not establish version compatibility: if its exported modules have missing dependencies, use an isolated npm installation of the verified Pi version rather than modifying the global install.
 
 To load a local checkout:
 
@@ -34,32 +34,41 @@ pi install /absolute/path/to/pi-claude-code-provider
 
 Pi remains authoritative for prepared context, branches, compaction, active tools, execution, provider handoff, and cancellation. Read the matching Pi checkout's contributor and provider documentation before changing those boundaries. Pi imports remain optional `*` peer dependencies and are not bundled.
 
+Two contracts are easy to break silently:
+
+- `streamSimple` owns both halves of Pi's provider request contract: apply the `onPayload` replacement before launching Claude, and invoke `onResponse` once initialization validates, before publishing content. Dropping either disables the matching Pi extension event for this provider.
+- Windows cleanup must remain rooted at the exact retained child PID. Never replace it with `/IM`, name-based PowerShell termination, or global process enumeration. Automatic stale-directory recovery stays disabled on Windows; inspect Node's temporary root and package markers before removing confirmed stale state.
+
 ## Compatibility baseline
 
 `src/compatibility.ts` owns Pi/Claude version, platform, and model-resolution values; `.github/workflows/ci.yml` owns the Node CI matrix and the Pi version CI installs. These three move together in the release commit, and the release gate then runs against exactly that commit; nothing is published unless it passes. Never advance them in a commit no gate will run against, and never advance them to a version the gate did not exercise.
 
-`MINIMUM_VERSIONS` in the same file is a separate frozen constant, stated in `README.md` and reported by the doctor, and is deliberately not derived from `VERIFIED_VERSIONS`. The baseline rises whenever a gate passes; the minimum moves only by an explicit decision to change what is supported. Deriving one from the other would drop support for working installs as a side effect of a baseline bump. Assert nothing about their relative order. They coincide today for both Pi and Claude Code.
+`MINIMUM_VERSIONS` in the same file is a separate frozen constant, stated in `README.md` and reported by the doctor, and is deliberately not derived from `VERIFIED_VERSIONS`. The baseline rises whenever a gate passes; the minimum moves only by an explicit decision to change what is supported. Deriving one from the other would drop support for working installs as a side effect of a baseline bump. Assert nothing about their relative order.
 
 | Component | Verified baseline |
 | --- | --- |
 | Pi | 0.85.1, npm distribution; standalone tar.gz bridge live-verified on Linux x64 |
 | Claude Code | 2.1.270 |
 | Node.js | 24.16.0 on WSL2, Ubuntu CI, and Apple Silicon macOS CI; 22.23.1 on Ubuntu CI and Windows CI |
-| Platform | WSL2 Ubuntu/Linux x64; native Windows x64; macOS (deterministic CI on `macos-latest` only) |
+| Platform | WSL2 Ubuntu/Linux x64; native Windows x64; macOS (deterministic CI) |
 
-Pi's distribution is part of the baseline, not an implementation detail: the npm build runs on Node and the standalone tar.gz build is a compiled Bun binary, and `process.execPath` means something different on each. `src/host-runtime.ts` owns that difference in one place (`scriptLaunch`), which sets `BUN_BE_BUN=1` so a compiled Pi binary runs the proposal bridge instead of its own embedded entry point, and pins `--config=` to a neutral `bunfig.toml` in the private request directory. Pi compiles with `--no-compile-autoload-bunfig`, but that protects Pi's own entry point only and does not survive `BUN_BE_BUN`; without the pin, a `bunfig.toml` in the bridge's working directory preloads code into it. Only the joined `--config=` form works, as Bun ignores a space-separated one and then consumes the script path. The mechanism is not Linux-specific: Pi builds all six standalone targets from one `bun build --compile` invocation, and `BUN_BE_BUN` is part of the embedded Bun runtime on each. Record a standalone baseline only after `npm run test:paid:bridge-standalone` passes against that exact build.
+Pi's distribution is part of the baseline: the npm build runs on Node, the standalone tar.gz build is a compiled Bun binary, and `process.execPath` means something different on each. `scriptLaunch` in `src/host-runtime.ts` owns that difference. It sets `BUN_BE_BUN=1` so a compiled Pi runs the proposal bridge instead of its own entry point, and pins `--config=` to a neutral `bunfig.toml` in the private request directory: Pi's `--no-compile-autoload-bunfig` does not survive `BUN_BE_BUN`, so a `bunfig.toml` in the bridge's working directory would otherwise preload code into it. Keep the joined `--config=` form, because Bun ignores a space-separated one and then consumes the script path. The mechanism is part of the embedded Bun runtime on every standalone target. Record a standalone baseline only after `npm run test:paid:bridge-standalone` passes against that exact build.
 
-macOS passes the [deterministic GitHub Actions matrix](.github/workflows/ci.yml) on `macos-latest`. No live gate, maintainer or community, has run on the current baseline. `platformStatus` still treats `darwin` as verified, across architectures rather than `arm64` alone, because nothing here takes a darwin-specific code path beyond the doctor's `sw_vers` probe. A live `test:paid:release` on macOS would be the first evidence at the current versions. Other platforms and versions continue with advisory warnings, while protocol and isolation mismatches fail closed. Supported effort values are `low`, `medium`, `high`, `xhigh`, and `max`; Pi `off` and `minimal` are hidden.
+A platform is live-verified only after `npm run test:paid:release` passes on it. `platformStatus` also treats `darwin` as verified, across architectures, on the [deterministic GitHub Actions matrix](.github/workflows/ci.yml), because nothing here takes a darwin-specific code path beyond the doctor's `sw_vers` probe. Other platforms and versions continue with advisory warnings, while protocol and isolation mismatches fail closed. Supported effort values are `low`, `medium`, `high`, `xhigh`, and `max`; Pi `off` and `minimal` are hidden.
 
 ### Captured Claude Code surface
 
-`test/support/captured/claude-<version>-help.txt` is `claude --help` captured byte-for-byte, currently from **2.1.270**. `validateClaudeCapabilities` decides whether the provider registers at all, so it is tested against help the CLI really emits rather than a hand-written list, which can spell flags the real help never shows.
+`test/support/captured/claude-<version>-help.txt` is `claude --help` captured byte-for-byte from the version `CAPTURED_CLAUDE_VERSION` in `test/support/claude-fixture.js` names. `validateClaudeCapabilities` decides whether the provider registers at all, so it is tested against help the CLI really emits rather than a hand-written list, which can spell flags the real help never shows.
 
-Recapture with `npm run capture:claude-surface`, then point `CAPTURED_CLAUDE_VERSION` in `test/support/claude-fixture.js` at the new file and review the diff. Re-pin deliberately, as part of moving the verified baseline — the diff on a CLI upgrade is the point of committing the artifact.
+Recapture with `npm run capture:claude-surface`, then point `CAPTURED_CLAUDE_VERSION` at the new file and review the diff. Re-pin deliberately, as part of moving the verified baseline — the diff on a CLI upgrade is the point of committing the artifact.
 
 ## Validation
 
+### Deterministic checks
+
 `npm run check` enforces dependency and import policy, Markdown links and versions, source boundaries, JavaScript syntax, and strict TypeScript. `npm test` runs deterministic tests. Neither command performs Claude inference or consumes subscription quota; `check` may run `claude --version` for advisory metadata.
+
+### Paid tests
 
 Subscription-consuming commands are named `test:paid:*`. They show the detected subscription, request caps, and quota/spend warning, then require the exact phrase `USE PAID CLAUDE QUOTA`. Noninteractive execution additionally requires `PI_CLAUDE_CODE_PROVIDER_CONFIRM_PAID_TESTS=1`. The underlying scripts refuse direct invocation, perform no automatic retries, and atomically claim a stage and aggregate slot before every provider or web-search Claude launch.
 
@@ -79,52 +88,48 @@ The runner gives Pi a temporary agent directory and disables automatic extension
 | `npm run test:paid:matrix` | 15 |
 | `npm run test:paid:release` | 55 |
 
+Run paid stages one at a time. `model-matrix.js` checks for leaked private directories by diffing the whole temporary root, so another provider request running at the same time reads as a leak.
+
 `PI_CLAUDE_CODE_PROVIDER_PI_BIN` selects which Pi executable the live scripts launch; without it they launch the npm-hosted CLI entry. This is deliberately separate from package resolution, so one npm-hosted development host can drive both distributions. `bridge-standalone` refuses to start unless that variable is set; point it at an extracted tar.gz `pi`.
 
 Both bridge lanes are required, and `test:paid:release` runs both. A `--no-tools` turn passes even when the proposal bridge never starts, so only a turn that actually round-trips a tool distinguishes a working bridge from a broken one. `/pi-claude-code-provider-doctor` performs the same handshake without consuming quota.
 
-The release suite covers text, tool, image, isolation, recovery, Unicode, history, web search, cache reuse, both bridge lanes, the gated aliases, and the supported effort matrix. Fable is technically selectable, but validating it on Pro consumes separate paid credits rather than the included subscription allocation, so it is deliberately excluded from the release matrix; the blocking Sonnet and Opus cases already exercise the shared transport. `npm run test:paid:fable` remains an opt-in one-launch case for a maintainer who separately authorizes that spend. Successful RPC harnesses close stdin so Pi can run session shutdown and flush metrics before exit.
+The release suite covers text, tool, image, isolation, recovery, Unicode, history, web search, cache reuse, both bridge lanes, the gated aliases, and the supported effort matrix. Successful RPC harnesses close stdin so Pi can run session shutdown and flush metrics before exit. The model matrix asserts the family an alias serves, not a dated model id, so an upstream model refresh cannot fail the gate while an alias serving the wrong family still does. Every entry also checks context/output capabilities, cleanup, and the absence of leaked private directories. Pro's `opus` entry retains the conservative 200K context limit.
 
-Run paid stages one at a time. `model-matrix.js` checks for leaked private directories by diffing the whole temporary root, so another provider request running at the same time reads as a leak.
+Fable is selectable but excluded from the release gate, because its availability and billing vary by tier. On Pro it requires usage credits, and with credits turned off every Fable request fails with an assistant error. Run `npm run test:paid:fable` only on an account where that spend is available and separately authorized; the blocking Sonnet and Opus cases already exercise the shared transport.
 
-The model matrix asserts the family an alias serves, not a dated model id, so an upstream model refresh cannot fail the gate while an alias serving the wrong family still does. Every entry also checks context/output capabilities, cleanup, and the absence of leaked private directories. Pro's `opus` entry retains the conservative 200K context limit.
+**Read the reported error before blaming the model.** When a turn ends in an assistant error, such as disabled usage credits, a rate limit, or a lost login, the live scripts fail with that error by name. Only a reply that arrived with the wrong text is evidence about model behavior.
 
-Each request serializes the complete current transcript. Cache-hit percentage is `cacheRead / (input + cacheRead + cacheWrite) * 100`; cache writes seed later reuse and are not hits. Preserve append-stable history blocks and sorted tool catalogs when changing serialization. Claude Code appends a changing `<total_tokens>` reminder that breaks reuse across fresh print-mode processes; the provider pins `totalTokensReminder: "off"` following [bcherny's maintainer guidance](https://github.com/anthropics/claude-code/issues/81259#issuecomment-5311888970). The setting is otherwise undocumented, so do not remove it without a replacement cache probe and new upstream guidance.
+### Prompt caching
 
-Claude Code places no breakpoint inside the replayed history, so `providerArgs` marks the last history block itself with `ttl: "1h"`; [DESIGN.md](DESIGN.md#compatibility-and-performance) explains why. The TTL is load-bearing: a shorter one is rejected by the API's longest-TTL-first ordering. Four breakpoints is the documented maximum, and every Claude 5 alias sits at exactly four, Haiku at three, so a fifth from any source turns a slow request into a failed one. Count them before changing anything here. `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT=off` is the user-facing escape hatch for that failure, not a substitute for the release gate. Moving the verified baseline requires a full release-gate run on the new build.
+Cache-hit percentage is `cacheRead / (input + cacheRead + cacheWrite) * 100`; cache writes seed later reuse and are not hits. [DESIGN.md](DESIGN.md#compatibility-and-performance) explains the mechanisms behind these rules.
 
-`npm run capture:claude-breakpoints` reproduces all of this without spending quota. It builds a request from the provider's own `providerArgs` and `buildClaudeEnvironment`, captures it against a loopback server with a dummy token, and prints the breakpoint table, the first block that differs between two captures in different private directories, and a verdict; it exits non-zero unless the shape is healthy. Like the provider, it runs Claude in a project directory: a disposable git repository with a configured clean filter and a same-size edit to the filtered file. The verdict is also BROKEN if that filter runs, a project file changes, Claude Code reports no working directory or one other than the project, the private request directory reaches the model outside attachment narration, or the proposal bridge is not ready. `--claude` selects a build, `--model` an alias, `--strip-marker` gives the control arm without editing `src/`, and `--images` and `--no-tools` vary the payload. Use it before trusting any claim in this section against a new release.
+Preserve these when changing serialization or Claude arguments:
 
-Measured reuse by gated alias at low effort on 2.1.270:
+- **Append-stable history.** Each request serializes the complete current transcript as append-stable history blocks with a sorted tool catalog. Never rewrite unchanged history.
+- **The token-reminder pin.** Keep `totalTokensReminder: "off"` in the pinned settings; Claude Code otherwise appends a changing `<total_tokens>` reminder that breaks reuse across fresh print-mode processes. The setting is undocumented and follows [bcherny's maintainer guidance](https://github.com/anthropics/claude-code/issues/81259#issuecomment-5311888970), so do not remove it without a replacement cache probe and new upstream guidance.
+- **The transcript breakpoint.** `providerArgs` marks the last history block with `ttl: "1h"`, because Claude Code places no breakpoint inside the replayed history. The TTL is load-bearing: the API's longest-TTL-first ordering rejects a shorter one ahead of Claude Code's own markers. The API allows four breakpoints, and a fifth from any source fails every request, so count them with the capture below before adding one. `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT=off` is the user-facing escape hatch for that failure, not a substitute for the release gate.
+- **Attachments.** Any attachment costs its request cache reuse, so attach only images Claude has not yet replied to. Keep answered images' transcript records unchanged, and never drop an image before an assistant reply follows it.
+- **Records per request.** Keep the records appended between requests under the ceiling described in DESIGN.md.
 
-| Alias | Turn-2 reuse | Note |
-| --- | --- | --- |
-| `sonnet` | 97% | The gate, where a moved breakpoint shows first. |
-| `haiku` | 99% | Gated by `cache-haiku`. The environment content arrives ahead of the transcript, so reuse depends on it staying identical. It read 0% while Claude ran in a per-request private directory that the content named. Haiku 4.5 also needs 4096 tokens before anything caches at all. |
+`npm run capture:claude-breakpoints` checks the request shape without spending quota. It builds a request from the provider's own `providerArgs` and `buildClaudeEnvironment`, captures it against a loopback server with a dummy token, and prints the breakpoint table, the first block that differs between two captures in different private directories, and a verdict; it exits non-zero unless the shape is healthy. Like the provider, it runs Claude in a project directory: a disposable git repository with a configured clean filter and a same-size edit to the filtered file. The verdict is also BROKEN if that filter runs, a project file changes, Claude Code reports no working directory or one other than the project, the private request directory reaches the model outside attachment narration, or the proposal bridge is not ready. `--claude` selects a build, `--model` an alias, `--strip-marker` gives the control arm without editing `src/`, and `--images` and `--no-tools` vary the payload. Run it against every new Claude Code build before trusting the rules above.
 
-**A single zero reading is not evidence.** Reuse has read 0% on requests later shown to be byte-identical to ones that read 99%. Before concluding that a model or a serialization change has broken caching, repeat the measurement, and diff the wire requests with `npm run capture:claude-breakpoints` rather than trusting one run.
+`test:paid:cache` runs on `sonnet:low` and `test:paid:cache-haiku` on `haiku:low`. Both are required: Haiku receives Claude Code's environment block ahead of the transcript, so a varying block there breaks Haiku while Sonnet still passes. Each reuse turn must reach 80% cache hits and write less than a quarter of turn 1's cache write, so a large stable system prompt cannot hide a rewritten transcript. Haiku 4.5 caches nothing below 4096 tokens, so keep the probe's padding above that. The padding starts with a per-run nonce; its turns are otherwise identical between runs, so without one a warm entry from an earlier run could satisfy turn 2 while reuse inside the run is broken.
 
-`test:paid:cache` runs on `sonnet:low` and `test:paid:cache-haiku` passes `--cache-model haiku:low`. Both are required, because Sonnet does not see a varying block ahead of the transcript that breaks Haiku. Beyond the hit percentage, each reuse turn must write less than a quarter of turn 1's cache write, so a large stable system prompt cannot hide a rewritten transcript. `PI_CLAUDE_CODE_PROVIDER_CACHE_MODEL` points the `cache` stage at another alias. Its wording assertions are unreliable on other aliases: on 2.1.270 Opus returned empty text on the third turn and Fable on the first, so neither has a reuse measurement on the current baseline, although `npm run capture:claude-breakpoints` shows both with Sonnet's healthy shape. For a measurement that does not depend on the model's exact reply, use a two-request usage probe instead.
+`PI_CLAUDE_CODE_PROVIDER_CACHE_MODEL` points the `cache` stage at another alias. The probe's exact-reply assertions are written for Sonnet and Haiku, so on another alias read the reported error first and use `npm run capture:claude-breakpoints` for the request shape.
 
-A request that attaches an image does not cache on any build, because the CLI narrates its own attachment read, including the private directory path, ahead of the transcript. `prepareRequest` therefore attaches only images Claude has not yet replied to. When changing serialization, keep answered images out of the attachment list and their transcript records unchanged, and never drop an image before an assistant reply follows it.
+**A single zero reading is not evidence.** Reuse can read 0% on a request byte-identical to one that reads 99%. Before concluding that a model or a serialization change has broken caching, repeat the measurement and diff the wire requests with `npm run capture:claude-breakpoints`.
 
-A request may not append more than about twenty records to the history the previous request cached. Each breakpoint walks back at most twenty positions to find a prior entry, and the documented exemption does not apply here: runs of consecutive `tool_use` or `tool_result` blocks collapse to one position, but `prepareRequest` gives every Pi message, each individual tool result included, its own plain text block. Measured on Sonnet, and reproduced on a second independent harness: 21 appended records still reused 91%, 25 dropped to 0%. The failure is total and silent. Pi makes a new request after every tool round trip, so the records appended between requests are usually one assistant message plus one per parallel tool result; in practice only a step with about nineteen or more parallel tool calls reaches the ceiling. An intermediate breakpoint would exceed the four-breakpoint budget. Sending each run of consecutive tool results as one block would lift the ceiling, but that serialization change is untested and would need the paid cache gate.
+## Updating compatibility
 
-The cache probe seeds its padding with a per-run nonce. Its turns are otherwise identical between runs, so without one a warm entry from an earlier run can satisfy turn 2 while reuse inside the run is broken.
-
-## Platform and compatibility work
-
-Windows cleanup must remain rooted at the exact retained child PID. Never replace it with `/IM`, name-based PowerShell termination, or global process enumeration. Automatic stale-directory recovery stays disabled on Windows; inspect Node's temporary root and package markers before removing confirmed stale state.
-
-`streamSimple` owns both halves of Pi's provider request contract: apply the `onPayload` replacement before launching Claude, and invoke `onResponse` once initialization validates, before publishing content. Dropping either silently disables the matching Pi extension event for this provider.
-
-When updating Claude compatibility:
+When updating Claude Code compatibility:
 
 1. Compare the required CLI flags, initialization fields, stream records, and exact tool inventory.
-2. Run `npm run capture:claude-breakpoints`, and again with `-- --model haiku`, and continue only on HEALTHY verdicts within four breakpoints; a fifth fails every request.
-3. Cover readiness, invalid or oversized JSONL, timeouts, aborts, error exits, and descendant cleanup deterministically.
-4. Run guarded live, cache, and model gates only with explicit quota authorization.
-5. Update machine-readable and written baselines only after the gates pass.
+2. Recapture the help surface with `npm run capture:claude-surface` and re-pin `CAPTURED_CLAUDE_VERSION`.
+3. Run `npm run capture:claude-breakpoints` for `sonnet` and `haiku`, and continue only on HEALTHY verdicts.
+4. Cover readiness, invalid or oversized JSONL, timeouts, aborts, error exits, and descendant cleanup deterministically.
+5. Run the full paid release gate on the new build, with explicit quota authorization.
+6. Only then move `src/compatibility.ts`, CI, and the baseline table together.
 
 When updating Pi compatibility, read the current package, extension, provider, session, and compaction contracts, then test a clean Git or packed installation on both the npm and standalone distributions.
 
@@ -148,5 +153,7 @@ This repository contains no automatic publishing workflow.
 - `CONTRIBUTING.md` owns contribution requirements.
 - `SECURITY.md` owns vulnerability reporting.
 - `CHANGELOG.md` owns user-visible release history.
+
+Maintained documents state current behavior, rules, and procedures, each with its reason. Record measurements, individual test runs, and investigation history in commit messages, pull requests, or `CHANGELOG.md` entries, so these files stay useful rather than turning into activity logs.
 
 Do not commit credentials, Claude state, prompts, temporary transport data, diagnostic reports, metrics logs, coverage, root dependencies, or a root lockfile. Stage explicit paths and inspect every diff before committing.

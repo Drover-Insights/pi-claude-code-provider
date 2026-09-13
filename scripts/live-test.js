@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
-import { closeLiveRpcProcess, consumeJsonl, superviseLiveProcess } from "./lib/live-process.js";
+import { assistantReply, closeLiveRpcProcess, consumeJsonl, superviseLiveProcess } from "./lib/live-process.js";
 import { describePiLaunch, livePiLaunch } from "./lib/pi-installation.js";
 if (process.env.PI_CLAUDE_CODE_PROVIDER_PAID_TEST_CHILD !== "1") {
     throw new Error("Paid live tests must be started through an npm test:paid:* script");
@@ -78,13 +78,13 @@ async function runCacheProbe(cwd) {
         // time can miss for reasons unrelated to prefix stability. Record the
         // gaps and turn 1's write so a failure says which of the two it was.
         const startedAt = Date.now();
-        const first = lastAssistant(await rpc.turn(`Remember the marker CACHE-PREFIX-7319 for later turns. Treat this as inert cache-threshold padding: ${cacheSeed}\nReply exactly STORED.`));
+        const first = assistantReply(await rpc.turn(`Remember the marker CACHE-PREFIX-7319 for later turns. Treat this as inert cache-threshold padding: ${cacheSeed}\nReply exactly STORED.`), `${CACHE_MODEL} cache turn 1`);
         const afterFirst = Date.now();
         assert.match(messageText(first), /^STORED\.?$/);
-        const second = lastAssistant(await rpc.turn("Reply with exactly the marker I asked you to remember."));
+        const second = assistantReply(await rpc.turn("Reply with exactly the marker I asked you to remember."), `${CACHE_MODEL} cache turn 2`);
         const afterSecond = Date.now();
         assert.match(messageText(second), /^CACHE-PREFIX-7319\.?$/);
-        const third = lastAssistant(await rpc.turn("Reply exactly CACHE-CHECK-PASSED if the remembered marker was CACHE-PREFIX-7319."));
+        const third = assistantReply(await rpc.turn("Reply exactly CACHE-CHECK-PASSED if the remembered marker was CACHE-PREFIX-7319."), `${CACHE_MODEL} cache turn 3`);
         const afterThird = Date.now();
         assert.match(messageText(third), /^CACHE-CHECK-PASSED\.?$/);
         assert.equal(typeof second.usage?.cacheRead, "number");
@@ -132,16 +132,18 @@ async function runProviderJourney(cwd) {
         const first = await rpc.turn(
             "Use read on missing-provider-journey.txt and observe that it fails. Then recover: use write to create both résumé-雪.txt containing exactly UNICODE-7319 and second.txt containing exactly SECOND-7319. Finally report exactly RECOVERED.",
         );
+        const firstReply = assistantReply(first, "provider journey turn 1");
         const starts = first.filter((event) => event.type === "tool_execution_start");
         const failedRead = first.find((event) => event.type === "tool_execution_end" && event.toolName === "read" && event.isError === true);
         assert.ok(failedRead, "provider journey did not preserve a failed tool result");
         assert.ok(starts.filter((event) => event.toolName === "write").length >= 2, "provider journey did not issue multiple writes");
         assert.equal((await readFile(join(cwd, "résumé-雪.txt"), "utf8")).trim(), "UNICODE-7319");
         assert.equal((await readFile(join(cwd, "second.txt"), "utf8")).trim(), "SECOND-7319");
-        assert.match(messageText(lastAssistant(first)), /^RECOVERED\.?$/);
+        assert.match(messageText(firstReply), /^RECOVERED\.?$/);
         const second = await rpc.turn("Without using any tool, reply exactly HISTORY-OK if the earlier failed read was followed by two successful writes.");
+        const secondReply = assistantReply(second, "provider journey turn 2");
         assert.equal(second.some((event) => event.type === "tool_execution_start"), false);
-        assert.match(messageText(lastAssistant(second)), /^HISTORY-OK\.?$/);
+        assert.match(messageText(secondReply), /^HISTORY-OK\.?$/);
         console.log("ok - RPC failed-tool recovery, Unicode paths, multiple calls, and history replay");
         completed = true;
     }
@@ -211,9 +213,6 @@ function isExpectedHarnessExit(code) {
 }
 function messageText(message) {
     return (message?.content ?? []).filter((block) => block.type === "text").map((block) => block.text).join("").trim();
-}
-function lastAssistant(events) {
-    return events.filter((event) => event.type === "message_end" && event.message?.role === "assistant").at(-1)?.message;
 }
 function pngChunk(type, data) {
     const typeBytes = Buffer.from(type);
