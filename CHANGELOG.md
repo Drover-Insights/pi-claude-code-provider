@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking.** A model must now report a usable context window. A missing or non-positive `contextWindow` previously skipped the context-budget check silently, leaving the request unbounded; it now fails every request with `context_window`. Pi validates this when a custom model is defined but not when a per-model override sets it, so an override is the reachable cause and the message says so. Give each overridden model a positive `contextWindow`. Fractional values are accepted, since the window is only compared.
+- **Breaking.** Claude runs in Pi's session working directory instead of the private request directory. The directory comes from the Pi session, not Pi's process directory, and the system prompt, tool catalog, image attachments and markers stay in the private directory. A request fails with `working_directory`, before anything is launched, when that directory is missing or is not a directory, or when no Pi session has started. The provider never substitutes another directory; restart Pi from an existing directory. Web search keeps its private directory.
+- An image is attached to a request only until Claude has replied to it: images from the latest user message onward, and from any messages sent since the preceding assistant reply, are attached. Any attachment makes a request uncached, so an image anywhere in history previously disabled prompt caching for the rest of the branch. Answered images keep their transcript records but are no longer shown to Claude, and no longer count toward the per-request image limits; attach an image again for Claude to re-inspect it. The context protocol is now `pi-claude-code-provider-context-v4`, so the first request after upgrading does not reuse an earlier cache entry.
+- Claude processes receive `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1`. It stops the git status and log collection Claude Code performs at startup for a system prompt this provider replaces; in a project, that status could execute a configured Git clean filter before any Pi tool call. What reaches the model is unchanged.
+- Image attachments are referenced by quoted absolute path. A temporary directory whose path contains a double quote cannot be referenced that way, so an image request made from one fails with `image_path`.
+- The paid release gate adds `npm run test:paid:cache-haiku`. Both cache stages also require each reuse turn to write less than a quarter of turn 1's cache write.
+- The minimum supported Claude Code version rises to 2.1.270, which is also the verified baseline. Older installs still run, and `/pi-claude-code-provider-doctor` reports them as below the minimum.
+- `npm run capture:claude-breakpoints` runs Claude in a disposable git project. It reports BROKEN on startup side effects, on a missing working directory or one other than the project, and on private paths reaching the model outside attachment narration.
+- Malformed messages, content blocks, and tools in a request context now fail with transcript preparation's `content_shape`, `content_type`, or image error categories instead of `payload_invalid`, which remains for a payload with an invalid top-level shape. Two layers previously checked the same rules. A non-boolean thinking `redacted` flag or a non-string image `mimeType` still fails, now with `content_shape`.
+- Web-search rate-limit rejections now include the overage-disabled reason, matching provider requests.
+- `/pi-claude-code-provider-doctor` prints one labeled fact per line.
+
 ### Fixed
 
 - On Claude Code 2.1.268 and later, Claude no longer proposes Pi tool calls into the provider's private request directory. Those builds tell the model that their own process directory is its primary working directory, and the provider started Claude in a per-request temporary directory, contradicting the working directory in Pi's system prompt. The model then wrote files there, which the provider rejects as a private-transport violation, and could describe a git project as not being a repository. In a project path resembling the private directory, 10 of 11 requests failed before and 0 of 11 after.
@@ -26,20 +40,6 @@
 - `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT=off` drops the provider's own prompt-cache breakpoint. Every Claude 5 alias already carries the API's maximum of four, so a Claude Code release that adds one would fail every request; the provider now recognizes that rejection, names the setting in the error, and records `cache_breakpoint_limit`.
 - Claude processes receive `CLAUDE_CONFIG_DIR` and `NODE_EXTRA_CA_CERTS` when set, so a relocated Claude Code configuration and a TLS-inspecting proxy's CA bundle work. Logins through `CLAUDE_CODE_OAUTH_TOKEN` remain unsupported.
 - `PI_CLAUDE_CODE_PROVIDER_DEV_PI` selects the npm-installed Pi that development checks and tests resolve packages from, so a standalone Pi can stay first on `PATH`.
-
-### Changed
-
-- Claude runs in Pi's session working directory instead of the private request directory. The directory comes from the Pi session, not Pi's process directory, and the system prompt, tool catalog, image attachments and markers stay in the private directory. A request fails with `working_directory`, before anything is launched, when that directory is missing or is not a directory, or when no Pi session has started. The provider never substitutes another directory. Web search keeps its private directory.
-- Claude processes receive `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1`. It stops the git status and log collection Claude Code performs at startup for a system prompt this provider replaces; in a project, that status could execute a configured Git clean filter before any Pi tool call. What reaches the model is unchanged.
-- Image attachments are referenced by quoted absolute path. A temporary directory whose path contains a double quote cannot be referenced that way, so an image request made from one fails with `image_path`.
-- The paid release gate adds `npm run test:paid:cache-haiku`. Both cache stages also require each reuse turn to write less than a quarter of turn 1's cache write.
-- The minimum supported Claude Code version rises to 2.1.270, which is also the verified baseline. Older installs still run, and `/pi-claude-code-provider-doctor` reports them as below the minimum.
-- `npm run capture:claude-breakpoints` runs Claude in a disposable git project. It reports BROKEN on startup side effects, on a missing working directory or one other than the project, and on private paths reaching the model outside attachment narration.
-- A model must now report a usable context window. A missing or non-positive `contextWindow` previously skipped the context-budget check silently, leaving the request unbounded; it now fails with `context_window`. Pi validates this when a custom model is defined but not when a per-model override sets it, so an override is the reachable cause and the message says so. Fractional values are accepted, since the window is only compared.
-- Malformed messages, content blocks, and tools in a request context now fail with transcript preparation's `content_shape`, `content_type`, or image error categories instead of `payload_invalid`, which remains for a payload with an invalid top-level shape. Two layers previously checked the same rules. A non-boolean thinking `redacted` flag or a non-string image `mimeType` still fails, now with `content_shape`.
-- Web-search rate-limit rejections now include the overage-disabled reason, matching provider requests.
-- An image is attached to a request only until Claude has replied to it: images from the latest user message onward, and from any messages sent since the preceding assistant reply, are attached. Any attachment makes a request uncached, so an image anywhere in history previously disabled prompt caching for the rest of the branch. Answered images keep their transcript records but are no longer shown to Claude, and no longer count toward the per-request image limits. The context protocol is now `pi-claude-code-provider-context-v4`, so the first request after upgrading does not reuse an earlier cache entry.
-- `/pi-claude-code-provider-doctor` prints one labeled fact per line.
 
 ## [0.2.0] - 2026-09-05
 

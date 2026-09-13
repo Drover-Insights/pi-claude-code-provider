@@ -43,7 +43,7 @@ Two contracts are easy to break silently:
 
 ## Compatibility baseline
 
-`src/compatibility.ts` owns Pi/Claude version, platform, and expected model-family values; `.github/workflows/ci.yml` owns the Node CI matrix and the Pi version CI installs. These two files and the baseline table below move together in the release commit, and the release gate then runs against exactly that commit; nothing is published unless it passes. Never advance them in a commit no gate will run against, and never advance them to a version the gate did not exercise.
+`src/compatibility.ts` owns Pi/Claude version, platform, and expected model-family values; `.github/workflows/ci.yml` owns the Node CI matrix and the Pi version CI installs. These two files and the baseline table below move together in one reviewed commit, and only after the paid release gate has passed on the build they name: during development, as [Updating compatibility](#updating-compatibility) describes, or in the release commit. The release gate runs again against the release commit and nothing is published unless it passes, so a baseline advanced during development is still proven against exactly what ships. Never advance them to a version the gate did not exercise.
 
 `MINIMUM_VERSIONS` in the same file is a separate frozen constant, stated in `README.md` and reported by the doctor, and is deliberately not derived from `VERIFIED_VERSIONS`. The baseline rises whenever a gate passes; the minimum moves only by an explicit decision to change what is supported. Deriving one from the other would drop support for working installs as a side effect of a baseline bump. Assert nothing about their relative order.
 
