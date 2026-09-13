@@ -86,7 +86,7 @@ export function providerArgs(
   // so it cannot invalidate the prefix this provider caches. That does not make
   // an image-bearing request cacheable: Claude Code narrates its own attachment
   // read ahead of the transcript, which is why prepareRequest attaches only the
-  // current user turn's images.
+  // images Claude has not yet replied to.
   const markedBlock = options.transcriptBreakpoint === false ? -1 : prepared.transcriptBlocks.length - 1;
   const prompt: PromptBlock[] = [
     ...prepared.transcriptBlocks.map((text, index) => ({

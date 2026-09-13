@@ -367,6 +367,66 @@ test("attaches images from the latest user message and the tool results after it
     }
 });
 
+test("attaches an image sent in consecutive user messages before any reply", async () => {
+    const prepared = await prepareRequest({
+        messages: [
+            { role: "user", content: [pixels("unanswered")], timestamp: 1 },
+            { role: "user", content: "Focus on the error in that screenshot", timestamp: 2 },
+        ],
+    });
+    try {
+        assert.deepEqual(prepared.attachmentPaths.map((path) => basename(path)), [imageName("unanswered")]);
+    }
+    finally {
+        await rm(prepared.directory, { recursive: true, force: true });
+    }
+});
+
+test("attaches a tool-result image when steering arrives before the next reply", async () => {
+    const prepared = await prepareRequest({
+        messages: [
+            { role: "user", content: [{ type: "text", text: "check the page" }, pixels("answered")], timestamp: 1 },
+            assistantMessage([{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "shot.png" } }], "toolUse"),
+            { role: "toolResult", toolCallId: "call-1", toolName: "read", content: [pixels("tool result")], isError: false, timestamp: 3 },
+            { role: "user", content: "Compare it with the old layout instead", timestamp: 4 },
+        ],
+    });
+    try {
+        // The first image was answered by the tool call; the tool result's was not.
+        assert.deepEqual(prepared.attachmentPaths.map((path) => basename(path)), [imageName("tool result")]);
+    }
+    finally {
+        await rm(prepared.directory, { recursive: true, force: true });
+    }
+});
+
+test("keeps attaching an image whose request failed before any reply", async () => {
+    const prepared = await prepareRequest({
+        messages: [
+            { role: "user", content: [pixels("unanswered")], timestamp: 1 },
+            assistantMessage([], "error"),
+            { role: "user", content: "try again", timestamp: 3 },
+        ],
+    });
+    try {
+        assert.deepEqual(prepared.attachmentPaths.map((path) => basename(path)), [imageName("unanswered")]);
+    }
+    finally {
+        await rm(prepared.directory, { recursive: true, force: true });
+    }
+});
+
+test("rejects a non-boolean redacted flag and a non-string image MIME type", async () => {
+    await assert.rejects(
+        prepareRequest({ messages: [assistantMessage([{ type: "thinking", thinking: "reasoning", redacted: "true" }])] }),
+        (error) => error.code === "content_shape" && /thinking redacted must be boolean/.test(error.message),
+    );
+    await assert.rejects(
+        prepareRequest({ messages: [{ role: "user", content: [{ type: "image", data: "AA==", mimeType: ["image/png"] }], timestamp: 1 }] }),
+        (error) => error.code === "content_shape" && /string mimeType/.test(error.message),
+    );
+});
+
 test("counts only attached images toward the image limits", async () => {
     const prepared = await prepareRequest({
         messages: [
