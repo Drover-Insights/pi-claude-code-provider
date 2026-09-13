@@ -3,8 +3,10 @@ import { access, chmod, mkdtemp, readFile, readdir, realpath, rm, stat, writeFil
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@earendil-works/pi-coding-agent";
-import initializePiClaudeCodeProvider from "../../extensions/pi-claude-code-provider.ts";
+import { fileURLToPath } from "node:url";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, DefaultPackageManager, SettingsManager, formatSize } from "@earendil-works/pi-coding-agent";
+import initializePiClaudeCodeProvider from "../../extensions/index.ts";
+import implementation from "../../extensions/pi-claude-code-provider.ts";
 import { VERIFIED_VERSIONS, platformStatus } from "../../src/compatibility.ts";
 import { CAPTURED_CLAUDE_HELP_PATH, ELIGIBLE_CLAUDE_AUTH } from "../support/claude-fixture.js";
 import { nodeFixtureSource } from "../support/node-fixture.js";
@@ -485,5 +487,19 @@ test("provider requests run Claude in the current Pi session's directory, never 
         if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
         else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
         await Promise.all([directory, sessionB, sessionC].map((path) => rm(path, { recursive: true, force: true })));
+    }
+});
+
+test("Pi resolves the package to its index entry, which re-exports the implementation", async () => {
+    // An index entry keeps Pi's startup extension label to the bare package name.
+    const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
+    const agentDir = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-agent-"));
+    try {
+        const packageManager = new DefaultPackageManager({ cwd: packageRoot, agentDir, settingsManager: SettingsManager.inMemory() });
+        const resolved = await packageManager.resolveExtensionSources([packageRoot], { temporary: true });
+        assert.deepEqual(resolved.extensions.map((extension) => extension.path), [join(packageRoot, "extensions", "index.ts")]);
+        assert.equal(initializePiClaudeCodeProvider, implementation);
+    } finally {
+        await rm(agentDir, { recursive: true, force: true });
     }
 });

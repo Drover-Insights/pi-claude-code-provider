@@ -29,7 +29,7 @@
     "access": "public"
   },
   "pi": {
-    "extensions": ["./extensions/pi-claude-code-provider.ts"]
+    "extensions": ["./extensions/index.ts"]
   },
   "scripts": {
     "setup:dev": "npm --prefix tooling ci --ignore-scripts",
