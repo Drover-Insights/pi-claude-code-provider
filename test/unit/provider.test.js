@@ -344,7 +344,7 @@ process.stdin.on("end", () => {
         const reported = JSON.parse(result.content.find((block) => block.type === "text")?.text ?? "{}");
         // Claude Code reports its cwd to the model, so it must be Pi's directory,
         // while private request state stays in, and is removed with, its own directory.
-        assert.equal(reported.cwd, await realpath(sessionDirectory));
+        assert.equal(await realpath(reported.cwd), await realpath(sessionDirectory));
         assert.notEqual(reported.privateDirectory, reported.cwd);
         await assert.rejects(access(reported.privateDirectory));
         await access(sessionDirectory);

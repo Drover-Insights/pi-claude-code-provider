@@ -474,13 +474,13 @@ test("provider requests run Claude in the current Pi session's directory, never 
         // the host process cwd is the wrong directory to report to Claude.
         assert.notEqual(await realpath(sessionB), await realpath(process.cwd()));
         pi.handlers.get("session_start")[0]({}, { cwd: sessionB, ui });
-        assert.equal(await childCwd(), await realpath(sessionB));
+        assert.equal(await realpath(await childCwd()), await realpath(sessionB));
         await pi.handlers.get("session_shutdown")[0]({}, {});
         const afterShutdown = await request();
         assert.equal(afterShutdown.stopReason, "error");
         assert.match(afterShutdown.errorMessage ?? "", /session working directory is not available/);
         pi.handlers.get("session_start")[0]({}, { cwd: sessionC, ui });
-        assert.equal(await childCwd(), await realpath(sessionC));
+        assert.equal(await realpath(await childCwd()), await realpath(sessionC));
         await pi.handlers.get("session_shutdown")[0]({}, {});
     }
     finally {
