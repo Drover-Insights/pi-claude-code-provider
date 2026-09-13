@@ -2,36 +2,36 @@
 
 ## [Unreleased]
 
+### Added
+
+- `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT=off` turns off the provider's prompt-cache marker. It is an escape hatch in case a future Claude Code release rejects requests for carrying too many cache markers; that error names this setting.
+- `CLAUDE_CONFIG_DIR` and `NODE_EXTRA_CA_CERTS` are passed to Claude when set, so a relocated Claude Code configuration and TLS-inspecting proxies work. Logins through `CLAUDE_CODE_OAUTH_TOKEN` remain unsupported.
+- For development: `PI_CLAUDE_CODE_PROVIDER_DEV_PI` selects the npm-installed Pi that checks and tests use, `npm run capture:claude-breakpoints` inspects prompt-cache markers without using quota, and the paid release gate adds Haiku and image-cache stages.
+
 ### Changed
 
-- **Breaking.** A model must now report a usable context window. A missing or non-positive `contextWindow` previously skipped the context-budget check silently, leaving the request unbounded; it now fails every request with `context_window`. Pi validates this when a custom model is defined but not when a per-model override sets it, so an override is the reachable cause and the message says so. Give each overridden model a positive `contextWindow`. Fractional values are accepted, since the window is only compared.
-- **Breaking.** Claude runs in Pi's session working directory instead of the private request directory. The directory comes from the Pi session, not Pi's process directory, and the system prompt, tool catalog, image attachments and markers stay in the private directory. A request fails with `working_directory`, before anything is launched, when that directory is missing or is not a directory, or when no Pi session has started. The provider never substitutes another directory; restart Pi from an existing directory. Web search keeps its private directory. Claude Code's startup Git status and log collection is disabled (`CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1`), so starting in a project does not run a configured Git clean filter; what reaches the model is unchanged.
-- Pi's startup `[Extensions]` list shows `pi-claude-code-provider` instead of `pi-claude-code-provider:pi-claude-code-provider.ts`. The manifest entry is now `extensions/index.ts`, which re-exports the unchanged implementation; provider, model, command, and tool identifiers are unchanged.
-- Conversations containing images can reuse Claude's prompt cache. Every image in the current Pi context is still attached on each request, as in 0.2.0, but each is now stored at a private path that stays the same for the Pi session instead of a new path per request, which kept requests carrying an image from reusing the cached prefix. Adding an image or changing the context can still cause a cold write; the 20-image and byte limits are unchanged.
-- The transcript format is now `pi-claude-code-provider-context-v4`, so the first request after upgrading does not reuse an earlier cache entry.
-- An image request fails with `image_path` when the temporary directory's path contains a double quote, which Claude Code's attachment syntax cannot express. Point `TMPDIR` (or `TEMP` on Windows) at a directory without one.
-- The minimum supported Claude Code version rises to 2.1.270, which is also the verified baseline. Older installs still run, and `/pi-claude-code-provider-doctor` reports them as below the minimum.
-- Malformed messages, content blocks, and tools in a request context now fail with transcript preparation's `content_shape`, `content_type`, or image error categories instead of `payload_invalid`, which remains for a payload with an invalid top-level shape. Two layers previously checked the same rules. A non-boolean thinking `redacted` flag or a non-string image `mimeType` still fails, now with `content_shape`.
-- Web-search rate-limit rejections now include the overage-disabled reason, matching provider requests.
-- `/pi-claude-code-provider-doctor` prints one labeled fact per line.
-- The npm package description, which pi.dev shows as the package summary, now reads: "The convenience of your Claude subscription in Pi, with the fewest possible surprises. Uses Claude Code's CLI under the hood."
+- Claude now starts in Pi's session working directory, the project Pi's tools work in, instead of a private temporary directory. Private request files stay separate, and `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1` stops Claude Code's startup Git status collection, so a project's Git filters don't run. If that directory is deleted while Pi is running, requests fail with `working_directory`; restart Pi from an existing directory.
+- Conversations with images now reuse Claude's prompt cache, because each image keeps the same private path for the whole Pi session. The 20-image and size limits are unchanged.
+- The first request after upgrading builds a fresh prompt cache, because the transcript format is now `pi-claude-code-provider-context-v4`.
+- The minimum supported Claude Code version is now 2.1.270. Older versions still run, and `/pi-claude-code-provider-doctor` flags them.
+- `/pi-claude-code-provider-doctor` prints one fact per line.
+- Pi's startup `[Extensions]` list shows `pi-claude-code-provider` instead of `pi-claude-code-provider:pi-claude-code-provider.ts`.
+- The package summary on npm and pi.dev now reads: "The convenience of your Claude subscription in Pi, with the fewest possible surprises. Uses Claude Code's CLI under the hood."
+- Web-search rate-limit errors include the overage-disabled reason, as provider requests already did.
+- A Pi `modelOverrides` entry with a missing or non-positive `contextWindow` now fails with `context_window` instead of skipping the context check. The provider's own models are unaffected.
+- Invalid request content, for example from another extension's payload hook, reports `content_shape`, `content_type`, or an image error category instead of `payload_invalid`.
+- An image request fails with `image_path` if the temporary directory's path contains a double quote; point `TMPDIR` (or `TEMP` on Windows) at another directory.
 
 ### Fixed
 
-- On Claude Code 2.1.268 and later, Claude no longer proposes Pi tool calls into the provider's private request directory. Those builds tell the model that their own process directory is its primary working directory, and the provider started Claude in a per-request temporary directory, contradicting the working directory in Pi's system prompt. The model then wrote files there, which the provider rejects as a private-transport violation, and could describe a git project as not being a repository. In a project path resembling the private directory, 10 of 11 requests failed before and 0 of 11 after.
-- Restore prompt-cache reuse broken by Claude Code 2.1.268, which moved the final `cache_control` marker off the replayed transcript and onto content it appends after it, so every turn rewrote the whole history instead of reading it back. No flag or setting restores it. The transport now marks the last history block itself, measured at 97.1% and 96.8% reuse on turns 2 and 3 against 0.0% before. Sonnet, Opus and Fable recover. Haiku 4.5, which receives that content ahead of the transcript, recovers once the content stops varying between requests, because Claude now runs in Pi's session directory: 99.2% and 99.0% on turns 2 and 3.
-- Removed the fixed 120 KiB system prompt ceiling, which refused an ordinary Pi session before Claude was launched and could not be cleared by changing the model or thinking level. Claude Code documents no size limit for `--system-prompt-file`, and the prompt has always reached it by path rather than through the argument vector the flag exists to avoid. A system prompt is now bounded only by the served model's context window, checked before any private request state is created and reported without context-overflow wording, because compaction cannot shrink a system prompt ([#4](https://github.com/chem/pi-claude-code-provider/issues/4)).
-- Pi tools whose names contain characters other than letters, digits, `_`, and `-`, such as `.`, no longer fail every request with `isolation_tools`. Claude Code replaces those characters when it names an MCP tool, so such names now receive a digest alias instead of being preserved.
-- Streaming a large tool call no longer re-parses its whole argument string on every delta, which cost time quadratic in the argument size and could stall Pi while a large `write` arrived. Partial arguments are previewed with Pi's streaming JSON parser at geometrically spaced points, and previews now show partial values instead of staying empty until the call completes.
-- A rate-limit warning is reported once per session per displayed text. Utilization changes by fractions between events while the notice shows whole percent, so identical-looking warnings previously repeated on every tool round trip.
-- Web search no longer requests partial messages it discards, which counted toward its 2 MiB capture limit.
-- Error messages carry at most a 1,000-character tail of Claude Code's stderr with the private request directory replaced, instead of up to 64 KiB of raw stderr. For web search that message reaches the model as a tool result.
-
-### Added
-
-- `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT=off` drops the provider's own prompt-cache breakpoint. Every Claude 5 alias already carries the API's maximum of four, so a Claude Code release that adds one would fail every request; the provider now recognizes that rejection, names the setting in the error, and records `cache_breakpoint_limit`.
-- Claude processes receive `CLAUDE_CONFIG_DIR` and `NODE_EXTRA_CA_CERTS` when set, so a relocated Claude Code configuration and a TLS-inspecting proxy's CA bundle work. Logins through `CLAUDE_CODE_OAUTH_TOKEN` remain unsupported.
-- `PI_CLAUDE_CODE_PROVIDER_DEV_PI` selects the npm-installed Pi that development checks and tests resolve packages from, so a standalone Pi can stay first on `PATH`.
+- On Claude Code 2.1.268 and later, Claude no longer proposes tool calls into the provider's private directory, which made those calls fail.
+- Prompt caching works again on Claude Code 2.1.268 and later: later turns reuse about 97–99% of the conversation instead of rewriting it.
+- Large system prompts, for example from many skills or context files, are no longer refused by a fixed 120 KiB limit; only the model's context window applies ([#4](https://github.com/chem/pi-claude-code-provider/issues/4)).
+- Pi tools whose names contain characters such as `.` no longer make every request fail with `isolation_tools`.
+- Pi no longer stalls while a large tool call, such as a big `write`, streams in, and the call preview fills in as it arrives.
+- A rate-limit warning that looks the same is shown once per session instead of on every tool round trip.
+- Error messages include a short, path-redacted excerpt of Claude Code's error output instead of up to 64 KiB of it.
+- Web search no longer counts discarded partial messages against its 2 MiB output limit.
 
 ## [0.2.0] - 2026-09-05
 
