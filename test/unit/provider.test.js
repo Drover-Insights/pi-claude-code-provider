@@ -8,7 +8,7 @@ import { createClaudeStream as createProviderStream, isExpectedToolHandoffExit, 
 import { getLastRequestMetrics } from "../../src/metrics.ts";
 import { superviseProcess, terminateProcessGroup } from "../../src/process-utils.ts";
 import { nodeFixtureSource } from "../support/node-fixture.js";
-import { PROVIDER_INIT_FIELDS, initRecord, toolUseEvents } from "../support/claude-fixture.js";
+import { CAPTURED_CLAUDE_VERSION, PROVIDER_INIT_FIELDS, initRecord, toolUseEvents } from "../support/claude-fixture.js";
 const model = {
     id: "sonnet",
     name: "Sonnet",
@@ -131,7 +131,7 @@ setTimeout(() => {
     let claims = 0;
     try {
         const stream = createClaudeStream(
-            { executable: fake.executable, version: "2.1.206", subscriptionType: "pro" },
+            { executable: fake.executable, version: CAPTURED_CLAUDE_VERSION, subscriptionType: "pro" },
             { claimLaunch: async () => { claims++; } },
         )(model, context, { reasoning: "medium", onPayload: () => replacement });
         const eventTypes = [];
@@ -211,7 +211,7 @@ process.stdin.on("end", () => {
     try {
         const stream = createClaudeStream({
             executable: fake.executable,
-            version: "2.1.206",
+            version: CAPTURED_CLAUDE_VERSION,
             subscriptionType: "pro",
         })(model, context, { reasoning: "medium" });
         const events = [];
@@ -468,7 +468,7 @@ setInterval(() => {}, 1000);`);
         const controller = new AbortController();
         const stream = createClaudeStream({
             executable: fake.executable,
-            version: "2.1.206",
+            version: CAPTURED_CLAUDE_VERSION,
             subscriptionType: "pro",
         })(model, context, { reasoning: "medium", signal: controller.signal });
         setTimeout(() => controller.abort(), 50);
@@ -602,7 +602,7 @@ process.stdin.on("end", () => {
     try {
         const stream = createClaudeStream({
             executable: fake.executable,
-            version: "2.1.206",
+            version: CAPTURED_CLAUDE_VERSION,
             subscriptionType: "pro",
         })(model, toolContext, { reasoning: "medium" });
         const result = await stream.result();
@@ -733,7 +733,7 @@ process.stdin.on("end", () => {
     try {
         const stream = createClaudeStream({
             executable: fake.executable,
-            version: "2.1.212",
+            version: CAPTURED_CLAUDE_VERSION,
             subscriptionType: "pro",
         })(model, toolContext, { reasoning: "medium" });
         const result = await stream.result();
@@ -819,7 +819,7 @@ process.stdin.on("end", () => {
   setInterval(() => {}, 1000);
 });`);
     try {
-        const result = await createClaudeStream({ executable: fake.executable, version: "2.1.212", subscriptionType: "pro" })(model, toolContext, { reasoning: "medium" }).result();
+        const result = await createClaudeStream({ executable: fake.executable, version: CAPTURED_CLAUDE_VERSION, subscriptionType: "pro" })(model, toolContext, { reasoning: "medium" }).result();
         assert.equal(result.stopReason, "toolUse");
         const metrics = await waitForRequestMetrics((entry) => entry.stopReason === "toolUse" && entry.exitCode === 143);
         assert.equal(metrics.lastPhase, "completed");
@@ -841,7 +841,7 @@ process.stdin.on("end", () => {
   setInterval(() => {}, 1000);
 });`);
     try {
-        const result = await createClaudeStream({ executable: fake.executable, version: "2.1.212", subscriptionType: "pro" })(model, toolContext, { reasoning: "medium" }).result();
+        const result = await createClaudeStream({ executable: fake.executable, version: CAPTURED_CLAUDE_VERSION, subscriptionType: "pro" })(model, toolContext, { reasoning: "medium" }).result();
         assert.equal(result.stopReason, "error");
         assert.match(result.errorMessage ?? "", /tool handoff exited unexpectedly.*code 1/);
         const metrics = await waitForRequestMetrics((entry) => entry.errorCategory === "process_exit" && entry.exitCode === 1);
@@ -861,7 +861,7 @@ process.stdin.on("end", () => {
   setInterval(() => {}, 1000);
 });`);
     try {
-        const result = await createClaudeStream({ executable: fake.executable, version: "2.1.212", subscriptionType: "pro" })(model, toolContext, { reasoning: "medium" }).result();
+        const result = await createClaudeStream({ executable: fake.executable, version: CAPTURED_CLAUDE_VERSION, subscriptionType: "pro" })(model, toolContext, { reasoning: "medium" }).result();
         assert.equal(result.stopReason, "error");
         assert.match(result.errorMessage ?? "", /tool handoff exited unexpectedly.*SIGKILL/);
         const metrics = await waitForRequestMetrics((entry) => entry.errorCategory === "process_exit" && entry.exitSignal === "SIGKILL");
@@ -887,7 +887,7 @@ process.stdin.on("end", () => {
 });`);
     try {
         const controller = new AbortController();
-        const stream = createClaudeStream({ executable: fake.executable, version: "2.1.212", subscriptionType: "pro" })(model, toolContext, { reasoning: "medium", signal: controller.signal });
+        const stream = createClaudeStream({ executable: fake.executable, version: CAPTURED_CLAUDE_VERSION, subscriptionType: "pro" })(model, toolContext, { reasoning: "medium", signal: controller.signal });
         for (let attempt = 0; attempt < 200; attempt++) {
             try {
                 await access(marker);
@@ -1050,7 +1050,7 @@ test("provider reports a synthetic response to Pi before streaming content", asy
         const responses = [];
         const stream = createClaudeStream({
             executable: fake.executable,
-            version: "2.1.206",
+            version: CAPTURED_CLAUDE_VERSION,
             subscriptionType: "pro",
         })(model, context, {
             reasoning: "medium",
@@ -1087,7 +1087,7 @@ test("provider waits for Pi's async response handler before streaming content", 
         const events = [];
         const stream = createClaudeStream({
             executable: fake.executable,
-            version: "2.1.206",
+            version: CAPTURED_CLAUDE_VERSION,
             subscriptionType: "pro",
         })(model, context, {
             reasoning: "medium",
@@ -1128,7 +1128,7 @@ test("provider fails before streaming when Pi's async response handler rejects",
         const events = [];
         const stream = createClaudeStream({
             executable: fake.executable,
-            version: "2.1.206",
+            version: CAPTURED_CLAUDE_VERSION,
             subscriptionType: "pro",
         })(model, context, {
             reasoning: "medium",

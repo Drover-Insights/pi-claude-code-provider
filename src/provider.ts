@@ -460,9 +460,9 @@ export function isExpectedToolHandoffExit(
 }
 
 /**
- * Claude runs in Pi's session directory, not its private request directory. From
- * Claude Code 2.1.268 the CLI tells the model its process cwd is the primary
- * working directory; a private path there contradicts Pi's system prompt and
+ * Claude runs in Pi's session directory, not its private request directory.
+ * Claude Code tells the model its process cwd is the primary working
+ * directory; a private path there contradicts Pi's system prompt and
  * draws tool calls into provider state. An unusable directory therefore fails
  * before anything is prepared or launched, because substituting any other
  * directory would bring that contradiction back.

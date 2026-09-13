@@ -13,7 +13,7 @@ export const VERIFIED_VERSIONS = Object.freeze({
 // nothing about their relative order.
 export const MINIMUM_VERSIONS = Object.freeze({
   pi: "0.85.1",
-  claudeCode: "2.1.261",
+  claudeCode: "2.1.270",
 });
 
 const VERIFIED_PLATFORMS = "WSL2 Ubuntu/linux-x64; native Windows/win32-x64; macOS/darwin";
@@ -99,9 +99,9 @@ export function platformStatus(
       warning: `${current} is a compatibility candidate; the verified platform baselines are ${VERIFIED_PLATFORMS}`,
     };
   }
-  // Verified across architectures rather than per-arch: the reported macOS
-  // coverage is a community report, and this package has no darwin-specific
-  // code path that an Intel Mac would take differently.
+  // Verified across architectures rather than per-arch: macOS coverage is the
+  // deterministic CI matrix, and this package has no darwin-specific code path
+  // that an Intel Mac would take differently.
   if (platform === "darwin") {
     return {
       component: "Platform",

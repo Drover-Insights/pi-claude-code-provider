@@ -22,7 +22,7 @@ const MIN_CACHE_HIT_PERCENT = 80;
 // stable system prompt can read back most of a request while the growing
 // transcript is rewritten wholesale, which a hit percentage alone would pass.
 const MAX_REUSE_WRITE_FRACTION = 0.25;
-// The cache stage runs on Sonnet, where Claude Code 2.1.268 moved the breakpoint;
+// The cache stage runs on Sonnet, where a moved Claude Code breakpoint shows first;
 // the cache-haiku stage passes --cache-model, because Haiku receives Claude
 // Code's environment block ahead of the transcript and fails differently. The
 // environment variable re-verifies another alias without a scratch runner copy.

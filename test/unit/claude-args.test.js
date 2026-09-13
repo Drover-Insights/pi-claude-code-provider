@@ -71,7 +71,7 @@ test("pins cache-stable Claude settings", () => {
 });
 
 test("marks exactly the last history block with a 1h cache breakpoint", () => {
-    // Claude Code 2.1.268 stopped marking the transcript, so the transport does.
+    // Claude Code does not mark the transcript, so the transport does.
     // The marker belongs on unchanged history, never on the growing attachment
     // suffix, and must be 1h: the API orders breakpoints longest-TTL-first and
     // Claude Code places a 1h marker after this one. The on-the-wire total is

@@ -42,9 +42,9 @@ function firstPackageRoot(candidates, name, detail = "") {
 }
 
 /**
- * Find the package that owns a file by walking ancestors. Pi moved its CLI from
- * <package>/dist/cli.js to <package>/dist/bundle/cli.js in 0.84.3; guessing a
- * fixed depth breaks again the next time that path changes.
+ * Find the package that owns a file by walking ancestors. The CLI entry's depth
+ * under the package is Pi's build detail and has changed before, so no fixed
+ * depth is assumed.
  */
 function ancestorPackageRoot(start, name) {
   let directory = dirname(start);

@@ -18,7 +18,7 @@
 // clean filter and a same-size edit to the filtered file, so a Claude Code
 // release that starts running git status at startup again executes the filter.
 // The verdict is BROKEN if that filter runs, a project file changes, Claude Code
-// reports any working directory other than the project, the private request
+// reports no working directory or any other than the project, the private request
 // directory reaches the model outside attachment narration, or the proposal
 // bridge never becomes ready.
 //
@@ -270,7 +270,7 @@ function report(captures, options, startup) {
   const environment = blocks.map(([, block]) => block.text ?? "").find((text) => text.includes("Primary working directory:"));
   const reportedCwd = environment?.match(/Primary working directory: (.*)/)?.[1]?.trim();
   console.log(`project cwd:    ${startup.project}`);
-  console.log(`environment:    ${reportedCwd === undefined ? "no working directory reported (Claude Code before 2.1.268)" : `Primary working directory ${reportedCwd}`}`);
+  console.log(`environment:    ${reportedCwd === undefined ? "no working directory reported" : `Primary working directory ${reportedCwd}`}`);
   // With attachments, Claude Code narrates each read by its private path; that is expected.
   const privateLeak = captures.some(({ body: captured, directory }) =>
     options.images > 0 ? (environment ?? "").includes(directory) : JSON.stringify(captured).includes(directory));
@@ -287,8 +287,10 @@ function report(captures, options, startup) {
     ? "BROKEN: starting Claude in the project ran its Git clean filter, a side effect before any Pi tool call"
     : startup.changedFiles.length
       ? "BROKEN: starting Claude changed project files"
-      : reportedCwd !== undefined && reportedCwd !== startup.project
-        ? "BROKEN: Claude Code reports a working directory other than the project, contradicting Pi's"
+      : reportedCwd !== startup.project
+        ? reportedCwd === undefined
+          ? "BROKEN: Claude Code reported no working directory, so its environment block has changed shape"
+          : "BROKEN: Claude Code reports a working directory other than the project, contradicting Pi's"
         : privateLeak
           ? "BROKEN: the private request directory reaches the model outside attachment narration"
           : bridgeNotReady

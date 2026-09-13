@@ -6,14 +6,14 @@ import type { PreparedRequest } from "./types.ts";
 // Empty setting sources plus explicit settings preserve subscription authentication
 // while suppressing user and project customizations. --bare would disable OAuth,
 // and --safe-mode would disable the proposal MCP server.
-// Claude Code 2.1.233 added a changing terminal token reminder that breaks
+// Claude Code otherwise appends a changing <total_tokens> reminder that breaks
 // append-only cache reuse across this provider's fresh print-mode processes.
 const SETTINGS = JSON.stringify({ disableAllHooks: true, autoMemoryEnabled: false, totalTokensReminder: "off" });
 const EMPTY_MCP = JSON.stringify({ mcpServers: {} });
 export const BRIDGE_PATH = fileURLToPath(new URL("../bridge/mcp-proposal-server.js", import.meta.url));
 
-// Claude Code 2.1.268 stopped placing a cache breakpoint inside the history this
-// provider replays, so the provider marks the last history block itself. The 1h
+// Claude Code places no cache breakpoint inside the history this provider
+// replays, so the provider marks the last history block itself. The 1h
 // TTL is required by the API's longest-TTL-first ordering, not chosen for its
 // lifetime. DESIGN.md#compatibility-and-performance has the full account and cost.
 const TRANSCRIPT_CACHE_CONTROL = { type: "ephemeral", ttl: "1h" } as const;

@@ -14,10 +14,10 @@ test("locates Pi packages in the bundled Windows-installer layout", async () => 
   const shim = join(prefix, "pi");
   const originalPath = process.env.PATH;
   try {
-    await Promise.all([codingAgent, piAi, typebox, join(codingAgent, "dist")].map((path) => mkdir(path, { recursive: true })));
+    await Promise.all([codingAgent, piAi, typebox, join(codingAgent, "dist", "bundle")].map((path) => mkdir(path, { recursive: true })));
     await writeFile(shim, "#!/bin/sh\n", { mode: 0o700 });
     await chmod(shim, 0o700);
-    await writeFile(join(codingAgent, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", bin: { pi: "dist/cli.js" } }));
+    await writeFile(join(codingAgent, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", bin: { pi: "dist/bundle/cli.js" } }));
     await writeFile(join(piAi, "package.json"), JSON.stringify({ name: "@earendil-works/pi-ai" }));
     await writeFile(join(typebox, "package.json"), JSON.stringify({ name: "typebox" }));
     process.env.PATH = `${prefix}${delimiter}${originalPath ?? ""}`;
@@ -28,7 +28,7 @@ test("locates Pi packages in the bundled Windows-installer layout", async () => 
       piAi: join(canonicalPrefix, "node_modules", "@earendil-works", "pi-coding-agent", "node_modules", "@earendil-works", "pi-ai"),
       typebox: join(canonicalPrefix, "node_modules", "@earendil-works", "pi-coding-agent", "node_modules", "typebox"),
     });
-    assert.equal(piCliEntry(codingAgent), join(codingAgent, "dist", "cli.js"));
+    assert.equal(piCliEntry(codingAgent), join(codingAgent, "dist", "bundle", "cli.js"));
   } finally {
     if (originalPath === undefined) delete process.env.PATH;
     else process.env.PATH = originalPath;
@@ -124,7 +124,7 @@ test("an npm shim resolves even though it is not a shebang script", async () => 
     // a compiled binary would reject every Windows npm development host.
     await writeFile(shim, "@ECHO off\r\nSETLOCAL\r\n", { mode: 0o700 });
     await chmod(shim, 0o700);
-    await writeFile(join(codingAgent, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", bin: { pi: "dist/cli.js" } }));
+    await writeFile(join(codingAgent, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", bin: { pi: "dist/bundle/cli.js" } }));
     await writeFile(join(codingAgent, "node_modules", "@earendil-works", "pi-ai", "package.json"), JSON.stringify({ name: "@earendil-works/pi-ai" }));
     await writeFile(join(codingAgent, "node_modules", "typebox", "package.json"), JSON.stringify({ name: "typebox" }));
     process.env.PATH = `${prefix}${delimiter}${originalPath ?? ""}`;

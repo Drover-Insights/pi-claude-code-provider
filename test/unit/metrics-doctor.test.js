@@ -9,9 +9,10 @@ import { bridgeArgv, formatBridgeArgv } from "../../src/claude-args.ts";
 import { formatDoctorSummary, probeBridge } from "../../src/doctor.ts";
 import { ClaudeCodeError } from "../../src/errors.ts";
 import { appendRequestMetrics, appendSearchMetrics, flushMetricsLog, getLastRequestMetrics, getMetricsLogError, recordRequestMetrics, recordSearchMetrics, serializeRequestMetrics, serializeSearchMetrics } from "../../src/metrics.ts";
+import { CAPTURED_CLAUDE_VERSION } from "../support/claude-fixture.js";
 
 const metrics = {
-    schemaVersion: 4, timestamp: "2026-07-12T00:00:00.000Z", platform: "linux", architecture: "x64", nodeVersion: "v24.16.0", claudeVersion: "2.1.207", requestedModel: "sonnet", resolvedModel: "claude-sonnet-5", effort: "medium",
+    schemaVersion: 4, timestamp: "2026-07-12T00:00:00.000Z", platform: "linux", architecture: "x64", nodeVersion: "v24.16.0", claudeVersion: CAPTURED_CLAUDE_VERSION, requestedModel: "sonnet", resolvedModel: "claude-sonnet-5", effort: "medium",
     messageCount: 2, toolCount: 1, imageCount: 0, transcriptBytes: 100, catalogBytes: 50, imageBytes: 0, estimatedInputTokens: 1000,
     servedContextWindow: 1000000, servedMaxOutputTokens: 64000, cacheRead: 10, cacheWrite: 20, inputTokens: 30, outputTokens: 2,
     cacheHitPercent: 16.67, durationMs: 250, lastPhase: "completed", cleanupComplete: true, stopReason: "stop", exitCode: 0, exitSignal: null, terminationExpected: false,
@@ -38,7 +39,7 @@ test("metrics serialization is content-free, appendable, and mode 0600", async (
 test("web-search metrics append a discriminated content-free record", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-search-metrics-"));
     const path = join(directory, "metrics.jsonl");
-    const search = { schemaVersion: 1, timestamp: metrics.timestamp, platform: "linux", architecture: "x64", nodeVersion: process.version, claudeVersion: "2.1.209", requestBytes: 12, capturedBytes: 34, resultBytes: 56, durationMs: 78, lastPhase: "completed", initialized: true, cleanupComplete: true, exitCode: 0, exitSignal: null };
+    const search = { schemaVersion: 1, timestamp: metrics.timestamp, platform: "linux", architecture: "x64", nodeVersion: process.version, claudeVersion: CAPTURED_CLAUDE_VERSION, requestBytes: 12, capturedBytes: 34, resultBytes: 56, durationMs: 78, lastPhase: "completed", initialized: true, cleanupComplete: true, exitCode: 0, exitSignal: null };
     try {
         assert.doesNotMatch(serializeSearchMetrics(search), /query|result text|secret/i);
         await appendSearchMetrics(path, search);
@@ -55,7 +56,7 @@ test("recording web-search metrics honors the configured private log", async () 
     const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-record-search-metrics-"));
     const path = join(directory, "metrics.jsonl");
     const original = process.env.PI_CLAUDE_CODE_PROVIDER_METRICS_LOG;
-    const search = { schemaVersion: 1, timestamp: metrics.timestamp, platform: "linux", architecture: "x64", nodeVersion: process.version, claudeVersion: "2.1.209", requestBytes: 1, capturedBytes: 2, resultBytes: 3, durationMs: 4, lastPhase: "completed", initialized: true, cleanupComplete: true };
+    const search = { schemaVersion: 1, timestamp: metrics.timestamp, platform: "linux", architecture: "x64", nodeVersion: process.version, claudeVersion: CAPTURED_CLAUDE_VERSION, requestBytes: 1, capturedBytes: 2, resultBytes: 3, durationMs: 4, lastPhase: "completed", initialized: true, cleanupComplete: true };
     process.env.PI_CLAUDE_CODE_PROVIDER_METRICS_LOG = path;
     try {
         recordSearchMetrics(search);
@@ -72,7 +73,7 @@ test("metrics flush serializes every queued provider and search record", async (
     const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-flush-metrics-"));
     const path = join(directory, "metrics.jsonl");
     const original = process.env.PI_CLAUDE_CODE_PROVIDER_METRICS_LOG;
-    const search = { schemaVersion: 1, timestamp: metrics.timestamp, platform: "linux", architecture: "x64", nodeVersion: process.version, claudeVersion: "2.1.209", requestBytes: 1, capturedBytes: 2, resultBytes: 3, durationMs: 4, lastPhase: "completed", initialized: true, cleanupComplete: true };
+    const search = { schemaVersion: 1, timestamp: metrics.timestamp, platform: "linux", architecture: "x64", nodeVersion: process.version, claudeVersion: CAPTURED_CLAUDE_VERSION, requestBytes: 1, capturedBytes: 2, resultBytes: 3, durationMs: 4, lastPhase: "completed", initialized: true, cleanupComplete: true };
     process.env.PI_CLAUDE_CODE_PROVIDER_METRICS_LOG = path;
     try {
         recordRequestMetrics(metrics);

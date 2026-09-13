@@ -9,14 +9,14 @@ This project was developed using frontier AI models under human guidance. Almost
 ## Requirements
 
 - [Pi](https://pi.dev) 0.85.1 or newer, installed from npm or a standalone build
-- Claude Code 2.1.261 or newer
+- Claude Code 2.1.270 or newer
 - Claude Code logged in to an eligible Pro, Max, Team, or Enterprise claude.ai subscription
 - Node.js 22.19 or newer only when Pi itself is installed from npm; the standalone build needs no separate Node installation
 
 Those are the minimum supported versions. They are not the same as the tested
 [compatibility baseline](DEVELOPING.md#compatibility-baseline), which records the newest versions a release gate has actually validated and moves on its own schedule. An older install is not blocked; `/pi-claude-code-provider-doctor` reports when one falls below the minimum.
 
-Pi ships as an npm package that runs on Node and as a compiled standalone binary that embeds Bun. Both are supported: the package launches its tool-proposal bridge under whichever runtime is hosting Pi rather than assuming Node. The standalone build carries its own live bridge gate, which the maintainer runs on Linux x64 and a contributor has reported passing on macOS; the table in [DEVELOPING.md](DEVELOPING.md#compatibility-baseline) records the exact scope. Run `/pi-claude-code-provider-doctor` on either build: it reports the resolved runtime and completes a real bridge handshake.
+Pi ships as an npm package that runs on Node and as a compiled standalone binary that embeds Bun. Both are supported: the package launches its tool-proposal bridge under whichever runtime is hosting Pi rather than assuming Node. The standalone build carries its own live bridge gate, which the maintainer runs on Linux x64; the table in [DEVELOPING.md](DEVELOPING.md#compatibility-baseline) records the exact scope. Run `/pi-claude-code-provider-doctor` on either build: it reports the resolved runtime and completes a real bridge handshake.
 
 See the [compatibility baseline](DEVELOPING.md#compatibility-baseline) for tested versions and platforms. Other platforms continue with a warning and runtime capability checks.
 
