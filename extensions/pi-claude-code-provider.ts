@@ -41,6 +41,9 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
   const searchOutputs = createSearchOutputOwner();
   let searchRegistrationAttempted = false;
   let activeRateLimitNotify: ((notice: RateLimitNotice) => void) | undefined;
+  // Pi's session directory, not process.cwd(): a resumed session takes its cwd
+  // from the session file, and Pi's tools resolve paths against that one.
+  let sessionCwd: string | undefined;
 
   pi.registerProvider(PROVIDER, {
     name: "Claude Code Subscription",
@@ -50,11 +53,13 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
     models: providerModels,
     streamSimple: createClaudeStream(installation, {
       onRateLimitNotice: (notice) => activeRateLimitNotify?.(notice),
+      workingDirectory: () => sessionCwd,
     }),
   });
 
   pi.on("session_start", (_event, ctx) => {
     searchOutputs.open();
+    sessionCwd = ctx.cwd;
     // The provider starts a process per tool round-trip; session scope prevents
     // Claude's repeated notice from surfacing throughout one Pi turn.
     activeRateLimitNotify = createRateLimitNotifier((message) => ctx.ui.notify(message, "warning"));
@@ -73,6 +78,7 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
 
   pi.on("session_shutdown", async () => {
     activeRateLimitNotify = undefined;
+    sessionCwd = undefined;
     try {
       await searchOutputs.close();
     } finally {

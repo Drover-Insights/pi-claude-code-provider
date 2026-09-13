@@ -44,6 +44,8 @@ test("builds an allowlisted Claude environment", () => {
         for (const name of forbidden)
             assert.equal(env[name], undefined);
         assert.equal(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1");
+        // Claude runs in the user's project; its startup git status can run configured Git filters.
+        assert.equal(env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS, "1");
         assert.equal(env.DISABLE_NON_ESSENTIAL_MODEL_CALLS, undefined);
         assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
         assert.equal(env.HOME, process.env.HOME);

@@ -18,8 +18,9 @@ test("uses only generated attachment references and replacement prompt", () => {
     const promptText = prompt.map((block) => block.text).join("\n");
     const joined = args.join("\n");
     assert.equal(prompt.length, 3);
-    assert.match(promptText, /@\.\/image.png/);
-    assert.doesNotMatch(promptText, /\/tmp\/private/);
+    // The only private path in the prompt is the quoted attachment reference.
+    assert.match(promptText, /@"\/tmp\/private\/image\.png"/);
+    assert.equal(promptText.split("/tmp/private").length - 1, 1);
     assert.doesNotMatch(promptText, /request\.json/);
     assert.doesNotMatch(promptText, /@\/etc\/passwd/);
     assert.match(promptText, /\\u0040\/etc\/passwd/);
@@ -31,8 +32,24 @@ test("uses only generated attachment references and replacement prompt", () => {
     assert.ok(args.includes(""));
     assert.deepEqual(prompt.map((block) => block.text), [
         ...prepared.transcriptBlocks,
-        "Generated image attachments for image_attachment blocks: @./image.png.",
+        'Generated image attachments for image_attachment blocks: @"/tmp/private/image.png".',
     ]);
+});
+
+test("references attachments by quoted absolute path, so a temp root with spaces stays one reference", () => {
+    // Claude runs in Pi's session directory, where a relative reference would
+    // resolve against the project instead of the private request directory.
+    const prepared = {
+        transcriptBlocks: ['{"record":0}'],
+        attachmentPaths: ["/tmp/root with spaces/request/a.png", "/tmp/root with spaces/request/b.png"],
+        systemPromptPath: "/tmp/root with spaces/request/system-prompt.txt",
+    };
+    const { prompt } = providerArgs(prepared, "sonnet", "low");
+    assert.equal(
+        prompt.at(-1).text,
+        'Generated image attachments for image_attachment blocks: @"/tmp/root with spaces/request/a.png" @"/tmp/root with spaces/request/b.png".',
+    );
+    assert.equal(prompt.at(-1).cache_control, undefined);
 });
 
 test("every advertised alias is passed to Claude verbatim", () => {

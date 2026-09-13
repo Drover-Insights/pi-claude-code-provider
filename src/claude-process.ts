@@ -14,8 +14,17 @@ export interface ClaudeProcessOptions {
   args: readonly string[];
   /** Variables added to the allowlisted Claude environment. */
   env?: NodeJS.ProcessEnv;
-  /** The private runtime directory: the child's cwd and the owner of its marker. */
+  /**
+   * The private runtime directory: owner of the marker, stale-state recovery and
+   * stderr redaction, and the child's cwd unless `cwd` is given.
+   */
   directory: string;
+  /**
+   * The child's cwd. Provider requests pass Pi's session directory, because
+   * Claude Code reports its cwd to the model as the primary working directory.
+   * Web search has no Pi tools to misdirect and keeps the private directory.
+   */
+  cwd?: string;
   stdin: "pipe" | "ignore";
   idleTimeoutMs: number;
   totalTimeoutMs: number;
@@ -56,14 +65,15 @@ export async function claimClaudeLaunch(signal: AbortSignal | undefined, claimLa
 }
 
 /**
- * Start Claude in its private runtime directory and take ownership of it: a
- * POSIX process-group leader or hidden Windows child, supervised, with a bounded
- * stderr tail and a cancellation listener registered before the caller awaits.
+ * Start Claude in `cwd`, or else its private runtime directory, and take
+ * ownership of it: a POSIX process-group leader or hidden Windows child,
+ * supervised, with a bounded stderr tail and a cancellation listener registered
+ * before the caller awaits.
  */
 export function spawnClaudeProcess(options: ClaudeProcessOptions): ClaudeProcess {
   const launch = claudeLaunch(options.installation.executable, options.args);
   const child = spawn(launch.command, launch.args, {
-    cwd: options.directory,
+    cwd: options.cwd ?? options.directory,
     env: buildClaudeEnvironment({ ...launch.env, ...options.env }),
     detached: process.platform !== "win32",
     windowsHide: process.platform === "win32",

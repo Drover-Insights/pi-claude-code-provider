@@ -1,5 +1,4 @@
 import { fileURLToPath } from "node:url";
-import { basename } from "node:path";
 import { ClaudeCodeError } from "./errors.ts";
 import { scriptLaunch, type ScriptLaunch } from "./host-runtime.ts";
 import type { PreparedRequest } from "./types.ts";
@@ -78,7 +77,10 @@ export function providerArgs(
   effort: string,
   options: { transcriptBreakpoint?: boolean } = {},
 ): { args: string[]; prompt: PromptBlock[] } {
-  const imageRefs = prepared.attachmentPaths.map((path) => `@./${basename(path)}`).join(" ");
+  // Quoted absolute references: Claude runs in Pi's session directory, where a
+  // relative reference would resolve against the project, and the quotes keep a
+  // temporary root containing spaces in one reference.
+  const imageRefs = prepared.attachmentPaths.map((path) => `@"${path}"`).join(" ");
   const imageInstruction = imageRefs
     ? ` Generated image attachments for image_attachment blocks: ${imageRefs}.`
     : "";

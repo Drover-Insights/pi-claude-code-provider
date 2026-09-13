@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -65,8 +65,10 @@ const toolTerminationResult = {
 // identical metrics, so each start first waits out the previous request's.
 let metricsBeforeRequest;
 let lastRequestStartedAt = 0;
-function createClaudeStream(...setup) {
-    const streamSimple = createProviderStream(...setup);
+// Every provider request runs Claude in Pi's session directory; tests that are
+// not about that directory use the temporary root as the session.
+function createClaudeStream(installation, dependencies = {}) {
+    const streamSimple = createProviderStream(installation, { workingDirectory: () => tmpdir(), ...dependencies });
     return (...request) => {
         while (Date.now() <= lastRequestStartedAt) { /* wait out the millisecond */ }
         metricsBeforeRequest = JSON.stringify(getLastRequestMetrics() ?? null);
@@ -97,10 +99,11 @@ function supervisorWithCleanupFailure(child, options) {
 test("provider streams a fake response after accepting a rich payload replacement", async () => {
     const fake = await fakeClaude(`
 const path = require("node:path");
+const privateDirectory = path.dirname(process.argv[process.argv.indexOf("--system-prompt-file") + 1]);
 fs.writeFileSync(path.join(__dirname, "captured-preparation"), JSON.stringify({
-  systemPrompt: fs.readFileSync(path.join(process.cwd(), "system-prompt.txt"), "utf8"),
-  catalog: JSON.parse(fs.readFileSync(path.join(process.cwd(), "tools.json"), "utf8")),
-  files: fs.readdirSync(process.cwd()),
+  systemPrompt: fs.readFileSync(path.join(privateDirectory, "system-prompt.txt"), "utf8"),
+  catalog: JSON.parse(fs.readFileSync(path.join(privateDirectory, "tools.json"), "utf8")),
+  files: fs.readdirSync(privateDirectory),
 }));
 setTimeout(() => {
   process.stdout.write(JSON.stringify(${JSON.stringify(toolInit)}) + "\\n");
@@ -323,22 +326,31 @@ test("provider settles once and retains marked state when process death is unkno
         await rm(fake.dir, { recursive: true, force: true });
     }
 });
-test("provider commits success only after clean exit and private-state cleanup", async () => {
+test("provider runs Claude in the session directory and commits success only after private-state cleanup", async () => {
+    const sessionDirectory = await mkdtemp(join(tmpdir(), "provider-session-directory-"));
     const fake = await fakeClaude(`
 process.stdin.resume();
 process.stdin.on("end", () => {
+  const reported = JSON.stringify({ cwd: process.cwd(), privateDirectory: require("node:path").dirname(process.argv[process.argv.indexOf("--system-prompt-file") + 1]) });
   process.stdout.write(JSON.stringify(${JSON.stringify(init)}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"result",is_error:false,result:process.cwd(),usage:{input_tokens:1,output_tokens:1}}) + "\\n");
+  process.stdout.write(JSON.stringify({type:"result",is_error:false,result:reported,usage:{input_tokens:1,output_tokens:1}}) + "\\n");
 });`);
     try {
-        const result = await createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" })(model, context, { reasoning: "medium" }).result();
-        assert.equal(result.stopReason, "stop");
-        const privateDirectory = result.content.find((block) => block.type === "text")?.text;
-        assert.ok(privateDirectory);
-        await assert.rejects(access(privateDirectory));
+        const result = await createClaudeStream(
+            { executable: fake.executable, version: "test", subscriptionType: "pro" },
+            { workingDirectory: () => sessionDirectory },
+        )(model, context, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "stop", result.errorMessage);
+        const reported = JSON.parse(result.content.find((block) => block.type === "text")?.text ?? "{}");
+        // Claude Code reports its cwd to the model, so it must be Pi's directory,
+        // while private request state stays in, and is removed with, its own directory.
+        assert.equal(reported.cwd, await realpath(sessionDirectory));
+        assert.notEqual(reported.privateDirectory, reported.cwd);
+        await assert.rejects(access(reported.privateDirectory));
+        await access(sessionDirectory);
     }
     finally {
-        await rm(fake.dir, { recursive: true, force: true });
+        await Promise.all([fake.dir, sessionDirectory].map((directory) => rm(directory, { recursive: true, force: true })));
     }
 });
 test("provider forwards and reserves Pi's effective per-request output limit", async () => {
@@ -582,7 +594,7 @@ process.stdin.on("end", () => {
   process.stdout.write(JSON.stringify(${JSON.stringify(toolInit)}) + "\\n");
   process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_start",message:{id:"msg_private",model:"claude-sonnet-5",usage:{input_tokens:0,output_tokens:0}}}}) + "\\n");
   process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_start",index:0,content_block:{type:"tool_use",id:"toolu_private",name:"mcp__pi__read",input:{}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_delta",index:0,delta:{type:"input_json_delta",partial_json:JSON.stringify({path:process.cwd() + "/request.json"})}}}) + "\\n");
+  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_delta",index:0,delta:{type:"input_json_delta",partial_json:JSON.stringify({path:require("node:path").dirname(process.argv[process.argv.indexOf("--system-prompt-file") + 1]) + "/request.json"})}}}) + "\\n");
   process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_stop",index:0}}) + "\\n");
   process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_delta",delta:{stop_reason:"tool_use"}}}) + "\\n");
   setInterval(() => {}, 1000);
@@ -712,7 +724,7 @@ process.stdin.resume();
 process.stdin.on("end", () => {
   process.stdout.write(JSON.stringify(${JSON.stringify(toolInit)}) + "\\n");
   process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_start",message:{id:"msg_tool",model:"claude-sonnet-5",usage:{input_tokens:0,output_tokens:0}}}}) + "\\n");
-  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_start",index:0,content_block:{type:"tool_use",id:process.cwd(),name:"mcp__pi__read",input:{}}}}) + "\\n");
+  process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_start",index:0,content_block:{type:"tool_use",id:require("node:path").dirname(process.argv[process.argv.indexOf("--system-prompt-file") + 1]),name:"mcp__pi__read",input:{}}}}) + "\\n");
   process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_delta",index:0,delta:{type:"input_json_delta",partial_json:'{"path":"README.md"}'}}}) + "\\n");
   process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_stop",index:0}}) + "\\n");
   process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_delta",delta:{stop_reason:"tool_use"}}}) + "\\n");
@@ -1009,7 +1021,7 @@ test("provider retains a caught failure category when private cleanup also fails
 test("provider cleans private transport state after an early process failure", async () => {
     const markerDirectory = await mkdtemp(join(tmpdir(), "provider-cleanup-marker-"));
     const marker = join(markerDirectory, "cwd");
-    const fake = await fakeClaude(`const index = process.argv.indexOf("--system-prompt-file"); const marker = fs.readFileSync(process.argv[index + 1], "utf8"); fs.writeFileSync(marker, process.cwd()); process.exit(9);`);
+    const fake = await fakeClaude(`const index = process.argv.indexOf("--system-prompt-file"); const marker = fs.readFileSync(process.argv[index + 1], "utf8"); fs.writeFileSync(marker, require("node:path").dirname(process.argv[index + 1])); process.exit(9);`);
     try {
         const result = await createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" })(model, { ...context, systemPrompt: marker }, { reasoning: "medium" }).result();
         assert.equal(result.stopReason, "error");
@@ -1163,7 +1175,7 @@ test("provider transports a system prompt far above the former size cap", async 
     const systemPrompt = markedSystemPrompt(146_101);
     const fake = await fakeClaude(`
 const path = require("node:path");
-const text = fs.readFileSync(path.join(process.cwd(), "system-prompt.txt"), "utf8");
+const text = fs.readFileSync(process.argv[process.argv.indexOf("--system-prompt-file") + 1], "utf8");
 fs.writeFileSync(path.join(__dirname, "captured-large"), JSON.stringify({
   bytes: Buffer.byteLength(text),
   head: text.slice(0, 32),
@@ -1328,5 +1340,101 @@ process.stdin.on("end", () => {
     }
     finally {
         await rm(fake.dir, { recursive: true, force: true });
+    }
+});
+
+test("provider refuses an unusable session working directory before preparing or launching", async () => {
+    const root = await mkdtemp(join(tmpdir(), "provider-session-cwd-"));
+    const regularFile = join(root, "not-a-directory");
+    await writeFile(regularFile, "file");
+    const spawnMarker = join(root, "spawned");
+    const fake = await fakeClaude(`fs.writeFileSync(${JSON.stringify(spawnMarker)}, "spawned"); process.exit(0);`);
+    try {
+        // No fallback: another directory would again contradict Pi's own.
+        const cases = [
+            [undefined, /not available/],
+            ["relative/project", /not absolute/],
+            [join(root, "missing"), /unavailable: .*missing \(ENOENT\)/],
+            [regularFile, /not a directory/],
+        ];
+        for (const [workingDirectory, message] of cases) {
+            let claims = 0;
+            const result = await createClaudeStream(
+                { executable: fake.executable, version: "test", subscriptionType: "pro" },
+                { workingDirectory: () => workingDirectory, claimLaunch: async () => { claims += 1; } },
+            )(model, context, { reasoning: "medium" }).result();
+            assert.equal(result.stopReason, "error");
+            assert.match(result.errorMessage ?? "", message);
+            assert.equal(claims, 0);
+            const metrics = await waitForRequestMetrics((entry) => entry.errorCategory === "working_directory");
+            // Validation precedes preparation, so no private request state was created.
+            assert.equal(metrics.lastPhase, "payload_applied");
+            assert.equal(metrics.transcriptBytes, 0);
+        }
+        await assert.rejects(access(spawnMarker));
+    }
+    finally {
+        await Promise.all([root, fake.dir].map((directory) => rm(directory, { recursive: true, force: true })));
+    }
+});
+
+test("provider does not retry elsewhere when the session directory disappears after validation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "provider-vanishing-cwd-"));
+    const sessionDirectory = join(root, "project");
+    await mkdir(sessionDirectory);
+    const spawnMarker = join(root, "spawned");
+    const fake = await fakeClaude(`fs.writeFileSync(${JSON.stringify(spawnMarker)}, process.cwd()); process.exit(0);`);
+    try {
+        let claims = 0;
+        const result = await createClaudeStream(
+            { executable: fake.executable, version: "test", subscriptionType: "pro" },
+            {
+                workingDirectory: () => sessionDirectory,
+                claimLaunch: async () => {
+                    claims += 1;
+                    await rm(sessionDirectory, { recursive: true, force: true });
+                },
+            },
+        )(model, context, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "error");
+        assert.match(result.errorMessage ?? "", /disappeared before Claude Code could start/);
+        assert.doesNotMatch(result.errorMessage ?? "", /spawn .*ENOENT/);
+        assert.equal(claims, 1);
+        const metrics = await waitForRequestMetrics((entry) => entry.errorCategory !== undefined);
+        assert.equal(metrics.errorCategory, "working_directory");
+        assert.equal(metrics.cleanupComplete, true);
+        await assert.rejects(access(spawnMarker));
+    }
+    finally {
+        await Promise.all([root, fake.dir].map((directory) => rm(directory, { recursive: true, force: true })));
+    }
+});
+
+test("provider rejects image attachments from a temporary directory containing a double quote before launch", { skip: process.platform === "win32" }, async () => {
+    const root = await mkdtemp(join(tmpdir(), "provider-quoted-temp-"));
+    const quotedRoot = join(root, 'temp"root');
+    await mkdir(quotedRoot);
+    const originalTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = quotedRoot;
+    try {
+        let claims = 0;
+        const imageContext = {
+            messages: [{ role: "user", content: [{ type: "text", text: "look" }, { type: "image", data: "AA==", mimeType: "image/png" }], timestamp: 1 }],
+            tools: [],
+        };
+        const result = await createClaudeStream(
+            { executable: join(root, "never-launched"), version: "test", subscriptionType: "pro" },
+            { workingDirectory: () => root, claimLaunch: async () => { claims += 1; } },
+        )(model, imageContext, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "error");
+        assert.match(result.errorMessage ?? "", /double quote/);
+        assert.equal(claims, 0);
+        await waitForRequestMetrics((entry) => entry.errorCategory === "image_path");
+        assert.deepEqual(await readdir(quotedRoot), []);
+    }
+    finally {
+        if (originalTmpdir === undefined) delete process.env.TMPDIR;
+        else process.env.TMPDIR = originalTmpdir;
+        await rm(root, { recursive: true, force: true });
     }
 });

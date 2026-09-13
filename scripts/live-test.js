@@ -18,9 +18,18 @@ const full = process.argv.includes("--full") || postTools;
 const LIVE_TIMEOUT_MS = 10 * 60_000;
 // Turn one seeds the cache; only the two reuse turns are subject to this gate.
 const MIN_CACHE_HIT_PERCENT = 80;
-// The gate runs on Sonnet, where Claude Code 2.1.268 moved the breakpoint.
-// Override to re-verify another alias without a scratch copy of this runner.
-const CACHE_MODEL = process.env.PI_CLAUDE_CODE_PROVIDER_CACHE_MODEL ?? "sonnet:low";
+// A reuse turn may write at most this share of turn 1's cache write. A large,
+// stable system prompt can read back most of a request while the growing
+// transcript is rewritten wholesale, which a hit percentage alone would pass.
+const MAX_REUSE_WRITE_FRACTION = 0.25;
+// The cache stage runs on Sonnet, where Claude Code 2.1.268 moved the breakpoint;
+// the cache-haiku stage passes --cache-model, because Haiku receives Claude
+// Code's environment block ahead of the transcript and fails differently. The
+// environment variable re-verifies another alias without a scratch runner copy.
+const cacheModelIndex = process.argv.indexOf("--cache-model");
+const CACHE_MODEL = (cacheModelIndex >= 0 ? process.argv[cacheModelIndex + 1] : undefined)
+    ?? process.env.PI_CLAUDE_CODE_PROVIDER_CACHE_MODEL
+    ?? "sonnet:low";
 async function runPi(cwd, prompt, extra = [], env = {}) {
     const child = spawnPi([
         "--no-session",
@@ -102,6 +111,9 @@ async function runCacheProbe(cwd) {
             `turn 3 took ${afterThird - afterSecond}ms (${usageOf(third)})`;
         assert.ok(secondHit >= MIN_CACHE_HIT_PERCENT, `Turn 2 cache hit ${secondHit.toFixed(1)}% was below ${MIN_CACHE_HIT_PERCENT}%; ${timeline}`);
         assert.ok(thirdHit >= MIN_CACHE_HIT_PERCENT, `Turn 3 cache hit ${thirdHit.toFixed(1)}% was below ${MIN_CACHE_HIT_PERCENT}%; ${timeline}`);
+        const maxReuseWrite = first.usage.cacheWrite * MAX_REUSE_WRITE_FRACTION;
+        assert.ok(second.usage.cacheWrite < maxReuseWrite, `Turn 2 wrote ${second.usage.cacheWrite} cache tokens, not below ${MAX_REUSE_WRITE_FRACTION * 100}% of turn 1's ${first.usage.cacheWrite}; ${timeline}`);
+        assert.ok(third.usage.cacheWrite < maxReuseWrite, `Turn 3 wrote ${third.usage.cacheWrite} cache tokens, not below ${MAX_REUSE_WRITE_FRACTION * 100}% of turn 1's ${first.usage.cacheWrite}; ${timeline}`);
         console.log(`ok - RPC multi-turn cache reuse on ${CACHE_MODEL} (turn 2 ${secondHit.toFixed(1)}% hit; turn 3 ${thirdHit.toFixed(1)}% hit; ${timeline})`);
         completed = true;
     }

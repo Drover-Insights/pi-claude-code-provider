@@ -13,15 +13,26 @@
 // own, and a breakpoint that survives behind a block which changes every request.
 // A single capture cannot tell them apart.
 //
+// Like the provider, Claude runs in a project directory rather than the private
+// one: a disposable git repository shared by both captures. It carries a Git
+// clean filter and a same-size edit to the filtered file, so a Claude Code
+// release that starts running git status at startup again executes the filter.
+// The verdict is BROKEN if that filter runs, a project file changes, Claude Code
+// reports any working directory other than the project, the private request
+// directory reaches the model outside attachment narration, or the proposal
+// bridge never becomes ready.
+//
 //   npm run capture:claude-breakpoints
 //   npm run capture:claude-breakpoints -- --model haiku
 //   npm run capture:claude-breakpoints -- --strip-marker
 //   npm run capture:claude-breakpoints -- --images 2 --output /tmp/body.json
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { claudeExecutable, buildClaudeEnvironment } from "../src/auth.ts";
 import { providerArgs } from "../src/claude-args.ts";
 
@@ -95,7 +106,52 @@ function captureServer() {
   return { server, body, listening, port: () => server.address().port };
 }
 
-async function captureOnce(options, executable, home) {
+/**
+ * A git project whose clean filter appends to a marker outside the working tree.
+ * The tracked file is edited without changing its size, so git status has to run
+ * the filter to decide whether the content changed.
+ */
+async function createProjectFixture(markerRoot) {
+  const project = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-capture-project-"));
+  const marker = join(markerRoot, "clean-filter-ran");
+  const git = (...args) => execFileSync("git", ["-C", project, "-c", "core.hooksPath=/dev/null", ...args], { stdio: "ignore" });
+  try {
+    git("init", "-q");
+    await writeFile(join(project, "tracked.txt"), "before\n");
+    await writeFile(join(project, ".gitattributes"), "tracked.txt filter=probe\n");
+    git("add", "tracked.txt", ".gitattributes");
+    git("-c", "user.name=capture", "-c", "user.email=capture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture");
+  } catch (error) {
+    await rm(project, { recursive: true, force: true });
+    throw new Error(`git is required for the startup side-effect fixture: ${error.message}`);
+  }
+  // A POSIX shell script; on Windows the filter probe is skipped and reported as such.
+  const filterProbe = process.platform !== "win32";
+  if (filterProbe) {
+    const filter = join(markerRoot, "clean-filter.sh");
+    await writeFile(filter, `#!/bin/sh\ncat\nprintf 'clean filter ran\\n' >> '${marker}'\n`, { mode: 0o700 });
+    git("config", "filter.probe.clean", filter);
+  }
+  await writeFile(join(project, "tracked.txt"), "after!\n");
+  return { project, marker, filterProbe };
+}
+
+/** Content hashes of every working-tree file outside .git. */
+async function snapshotTree(root) {
+  const files = new Map();
+  const walk = async (directory) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (entry.name === ".git") continue;
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else files.set(relative(root, path), createHash("sha256").update(await readFile(path)).digest("hex"));
+    }
+  };
+  await walk(root);
+  return files;
+}
+
+async function captureOnce(options, executable, home, project) {
   const { server, body, listening, port } = captureServer();
   await listening;
   const baseUrl = `http://127.0.0.1:${port()}`;
@@ -135,7 +191,7 @@ async function captureOnce(options, executable, home) {
     for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]) delete env[name];
     // A relocated configuration directory would expose the account this capture must never read.
     delete env.CLAUDE_CONFIG_DIR;
-    const child = spawn(executable, args, { cwd: directory, env, stdio: ["pipe", "ignore", "ignore"] });
+    const child = spawn(executable, args, { cwd: project, env, stdio: ["pipe", "ignore", "ignore"] });
     child.stdin.end(`${JSON.stringify({ type: "user", message: { role: "user", content: prompt } })}\n`);
     let timer;
     const captured = await Promise.race([
@@ -148,7 +204,9 @@ async function captureOnce(options, executable, home) {
       clearTimeout(timer);
       child.kill();
     });
-    return { body: redact(JSON.parse(captured)), prompt };
+    // Claude Code sends its first request only after the MCP tool catalog loads.
+    const bridgeReady = options.tools ? existsSync(prepared.readyPath) : undefined;
+    return { body: redact(JSON.parse(captured)), prompt, directory, bridgeReady };
   } finally {
     server.close();
     await rm(directory, { recursive: true, force: true });
@@ -176,7 +234,7 @@ function flatten(body) {
   return blocks;
 }
 
-function report(captures) {
+function report(captures, options, startup) {
   const { body, prompt } = captures.at(-1);
   const blocks = flatten(body);
   const sent = new Set(prompt.map((block) => block.text));
@@ -209,16 +267,39 @@ function report(captures) {
     }
   }
 
-  // The four verdicts are the four things that can go wrong, in the order that
-  // makes the earliest one the actionable answer.
-  const verdict =
-    marked.length > MAX_BREAKPOINTS
-      ? `BROKEN: ${marked.length} breakpoints exceeds the ${MAX_BREAKPOINTS} the API accepts; it will reject this request`
-      : !marked.some(({ position }) => position >= first && position <= last)
-        ? "BROKEN: no breakpoint inside the transcript, so no growing prefix is reusable"
-        : varying !== -1 && varying <= last
-          ? "BROKEN: a block ahead of the transcript changes every request, so its cached entry is never matched"
-          : "HEALTHY: the transcript carries a breakpoint and everything ahead of it is stable";
+  const environment = blocks.map(([, block]) => block.text ?? "").find((text) => text.includes("Primary working directory:"));
+  const reportedCwd = environment?.match(/Primary working directory: (.*)/)?.[1]?.trim();
+  console.log(`project cwd:    ${startup.project}`);
+  console.log(`environment:    ${reportedCwd === undefined ? "no working directory reported (Claude Code before 2.1.268)" : `Primary working directory ${reportedCwd}`}`);
+  // With attachments, Claude Code narrates each read by its private path; that is expected.
+  const privateLeak = captures.some(({ body: captured, directory }) =>
+    options.images > 0 ? (environment ?? "").includes(directory) : JSON.stringify(captured).includes(directory));
+  const bridgeNotReady = options.tools && captures.some(({ bridgeReady }) => !bridgeReady);
+  console.log(
+    `startup:        ${startup.filterProbe ? `git clean filter ${startup.filterRan ? "RAN" : "did not run"}` : "git clean filter probe skipped on Windows"}; ` +
+      `${startup.changedFiles.length ? `project files changed: ${startup.changedFiles.join(", ")}` : "project files unchanged"}` +
+      `${options.tools ? `; bridge ${bridgeNotReady ? "NOT ready" : "ready"}` : ""}`,
+  );
+
+  // Startup side effects come first: they are wrong regardless of caching. The
+  // breakpoint verdicts follow in the order that makes the earliest the actionable answer.
+  const verdict = startup.filterRan
+    ? "BROKEN: starting Claude in the project ran its Git clean filter, a side effect before any Pi tool call"
+    : startup.changedFiles.length
+      ? "BROKEN: starting Claude changed project files"
+      : reportedCwd !== undefined && reportedCwd !== startup.project
+        ? "BROKEN: Claude Code reports a working directory other than the project, contradicting Pi's"
+        : privateLeak
+          ? "BROKEN: the private request directory reaches the model outside attachment narration"
+          : bridgeNotReady
+            ? "BROKEN: the proposal bridge was not ready when Claude Code sent its request"
+            : marked.length > MAX_BREAKPOINTS
+              ? `BROKEN: ${marked.length} breakpoints exceeds the ${MAX_BREAKPOINTS} the API accepts; it will reject this request`
+              : !marked.some(({ position }) => position >= first && position <= last)
+                ? "BROKEN: no breakpoint inside the transcript, so no growing prefix is reusable"
+                : varying !== -1 && varying <= last
+                  ? "BROKEN: a block ahead of the transcript changes every request, so its cached entry is never matched"
+                  : "HEALTHY: no startup side effects, and the transcript carries a breakpoint with everything ahead of it stable";
   console.log(`verdict:        ${verdict}`);
   return verdict.startsWith("HEALTHY");
 }
@@ -226,13 +307,28 @@ function report(captures) {
 const options = parseOptions(process.argv.slice(2));
 const executable = options.claude ?? claudeExecutable();
 const home = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-capture-home-"));
+const markerRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-capture-marker-"));
 let captures;
+let startup;
+let fixture;
 try {
-  captures = [await captureOnce(options, executable, home), await captureOnce(options, executable, home)];
+  fixture = await createProjectFixture(markerRoot);
+  const before = await snapshotTree(fixture.project);
+  captures = [
+    await captureOnce(options, executable, home, fixture.project),
+    await captureOnce(options, executable, home, fixture.project),
+  ];
+  const after = await snapshotTree(fixture.project);
+  startup = {
+    project: await realpath(fixture.project),
+    filterProbe: fixture.filterProbe,
+    filterRan: existsSync(fixture.marker),
+    changedFiles: [...new Set([...before.keys(), ...after.keys()])].filter((name) => before.get(name) !== after.get(name)),
+  };
 } finally {
-  await rm(home, { recursive: true, force: true });
+  await Promise.all([home, markerRoot, fixture?.project].filter(Boolean).map((path) => rm(path, { recursive: true, force: true })));
 }
-const healthy = report(captures);
+const healthy = report(captures, options, startup);
 if (options.output) {
   await mkdir(dirname(options.output), { recursive: true });
   await writeFile(options.output, `${JSON.stringify(captures.at(-1).body, null, 2)}\n`);

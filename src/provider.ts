@@ -1,4 +1,6 @@
-import { access } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { access, stat } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 import type {
   Api,
   AssistantMessageEventStream,
@@ -11,7 +13,7 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { bridgeArgv, formatBridgeArgv, providerArgs, transcriptBreakpointEnabled } from "./claude-args.ts";
 import { claimClaudeLaunch, settleFailure, spawnClaudeProcess, type ClaudeProcess } from "./claude-process.ts";
 import { prepareRequest } from "./context-serializer.ts";
-import { appendCleanupFailure, ClaudeCodeError, errorText } from "./errors.ts";
+import { appendCleanupFailure, ClaudeCodeError, errorCode, errorText } from "./errors.ts";
 import { JsonlParser } from "./jsonl.ts";
 import { recordRequestMetrics } from "./metrics.ts";
 import { createOutput } from "./output.ts";
@@ -36,6 +38,11 @@ export interface ClaudeStreamDependencies {
   onRateLimitNotice?: RateLimitNoticeSink;
   claimLaunch?: ClaimLaunch;
   supervise?: typeof superviseProcess;
+  /**
+   * Pi's session working directory. Claude runs there so the working directory
+   * Claude Code reports to the model is the one Pi's tools resolve against.
+   */
+  workingDirectory?: () => string | undefined;
 }
 
 export function createClaudeStream(
@@ -48,6 +55,9 @@ export function createClaudeStream(
   const supervise = dependencies.supervise ?? superviseProcess;
   return (model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream => {
     const stream = createAssistantMessageEventStream();
+    // Read once, when Pi starts the request: a session switch during asynchronous
+    // preparation must not move this request to another directory.
+    const sessionCwd = dependencies.workingDirectory?.();
     const output = createOutput(model);
 
     void (async () => {
@@ -55,6 +65,7 @@ export function createClaudeStream(
       const effort = options?.reasoning ?? "medium";
       let prepared: Awaited<ReturnType<typeof prepareRequest>> | undefined;
       let claude: ClaudeProcess | undefined;
+      let cwd: string | undefined;
       let toolUse = false;
       let terminationCause: ClaudeTerminationCause = "none";
       let mapper: ClaudeEventMapper | undefined;
@@ -169,6 +180,7 @@ export function createClaudeStream(
         // Phase 1 — prepare Pi's logical payload and private transport state.
         const effectiveContext = await applyPayloadHook(model, context, options);
         metrics.lastPhase = "payload_applied";
+        cwd = await requireWorkingDirectory(sessionCwd);
         metrics.messageCount = effectiveContext.messages.length;
         metrics.toolCount = effectiveContext.tools?.length ?? 0;
         const systemPromptBytes = Buffer.byteLength(effectiveContext.systemPrompt ?? "");
@@ -236,15 +248,18 @@ export function createClaudeStream(
             ...(prepared.catalogPath ? { PI_CLAUDE_TOOL_CATALOG: prepared.catalogPath } : {}),
           },
           directory: prepared.directory,
+          cwd,
           stdin: "pipe",
           idleTimeoutMs,
           totalTimeoutMs,
           signal: options?.signal,
           supervise,
           onFailure(error) {
+            const vanished = vanishedWorkingDirectory(error, cwd);
             if (error instanceof ProcessTerminationError) errorCategory = "process_cleanup";
+            else if (vanished) errorCategory = "working_directory";
             else errorCategory ??= "process";
-            mapper?.fail(error.message, options?.signal?.aborted === true);
+            mapper?.fail((vanished ?? error).message, options?.signal?.aborted === true);
           },
           onAbort() {
             terminationCause = "caller_abort";
@@ -385,7 +400,8 @@ export function createClaudeStream(
             ),
           );
         }
-      } catch (error) {
+      } catch (caught) {
+        const error = vanishedWorkingDirectory(caught, cwd) ?? caught;
         if (error instanceof ProcessTerminationError) errorCategory = "process_cleanup";
         else errorCategory ??= error instanceof ClaudeCodeError
           ? error.code
@@ -441,6 +457,51 @@ export function isExpectedToolHandoffExit(
   // only from the tool-handoff path after cleanup and proposal validation.
   if (result.signal !== null) return false;
   return platform === "win32" ? result.code === 1 : result.code === 143;
+}
+
+/**
+ * Claude runs in Pi's session directory, not its private request directory. From
+ * Claude Code 2.1.268 the CLI tells the model its process cwd is the primary
+ * working directory; a private path there contradicts Pi's system prompt and
+ * draws tool calls into provider state. An unusable directory therefore fails
+ * before anything is prepared or launched, because substituting any other
+ * directory would bring that contradiction back.
+ */
+async function requireWorkingDirectory(directory: string | undefined): Promise<string> {
+  if (!directory) {
+    throw new ClaudeCodeError(
+      "working_directory",
+      "Pi's session working directory is not available; the provider can only run inside a started Pi session",
+    );
+  }
+  if (!isAbsolute(directory)) {
+    throw new ClaudeCodeError("working_directory", `Pi's session working directory is not absolute: ${directory}`);
+  }
+  let isDirectory: boolean;
+  try {
+    isDirectory = (await stat(directory)).isDirectory();
+  } catch (error) {
+    throw new ClaudeCodeError(
+      "working_directory",
+      `Pi's session working directory is unavailable: ${directory} (${errorCode(error) ?? errorText(error)}); restart Pi in an existing directory`,
+    );
+  }
+  if (!isDirectory) {
+    throw new ClaudeCodeError("working_directory", `Pi's session working directory is not a directory: ${directory}`);
+  }
+  return directory;
+}
+
+/**
+ * A directory removed after validation makes spawn fail with ENOENT, which reads
+ * as a missing Claude executable. Name the directory instead; never retry elsewhere.
+ */
+function vanishedWorkingDirectory(error: unknown, directory: string | undefined): ClaudeCodeError | undefined {
+  if (!directory || errorCode(error) !== "ENOENT" || existsSync(directory)) return undefined;
+  return new ClaudeCodeError(
+    "working_directory",
+    `Pi's session working directory disappeared before Claude Code could start: ${directory}; restart Pi in an existing directory`,
+  );
 }
 
 function timeoutSetting(name: string, fallback: number): number {

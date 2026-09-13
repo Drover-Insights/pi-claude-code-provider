@@ -200,6 +200,10 @@ export function buildClaudeEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.Pr
     if (process.env[name] !== undefined) env[name] = process.env[name];
   }
   env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
+  // Claude Code collects git status, log, and user.name at startup for a default
+  // system prompt this provider replaces. Run in the user's project, that status
+  // can execute a configured Git clean filter before any Pi tool call.
+  env.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS = "1";
   env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
   return { ...env, ...extra };
 }

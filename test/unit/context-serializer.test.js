@@ -442,3 +442,38 @@ test("counts only attached images toward the image limits", async () => {
         await rm(prepared.directory, { recursive: true, force: true });
     }
 });
+
+test("attaches images by absolute path under a temp root with spaces, and refuses a root containing a double quote", { skip: process.platform === "win32" }, async () => {
+    const fixture = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-attachment-root-"));
+    const spaced = join(fixture, "root with spaces");
+    const quoted = join(fixture, 'root "quoted"');
+    await mkdir(spaced);
+    await mkdir(quoted);
+    const image = { type: "image", data: Buffer.from("png!").toString("base64"), mimeType: "image/png" };
+    const context = { messages: [{ role: "user", content: [image], timestamp: 1 }] };
+    try {
+        const prepared = await prepareRequestWithLimits(context, {}, spaced);
+        try {
+            assert.equal(prepared.attachmentPaths.length, 1);
+            assert.equal(prepared.attachmentPaths[0].startsWith(`${prepared.directory}/`), true);
+            assert.equal(prepared.directory.includes("root with spaces"), true);
+            // Claude runs in Pi's session directory, not this one, so the header
+            // must not describe Claude's cwd as provider-private.
+            const header = JSON.parse(prepared.transcriptBlocks[0]);
+            assert.match(header.instruction, /Generated attachments are provider-private; never pass their paths to Pi tools\./);
+            assert.doesNotMatch(header.instruction, /transport cwd/);
+        }
+        finally {
+            await rm(prepared.directory, { recursive: true, force: true });
+        }
+        // Claude Code's quoted @-reference cannot contain a double quote.
+        await assert.rejects(
+            prepareRequestWithLimits(context, {}, quoted),
+            (error) => error.code === "image_path" && /double quote/.test(error.message),
+        );
+        assert.deepEqual(await readdir(quoted), []);
+    }
+    finally {
+        await rm(fixture, { recursive: true, force: true });
+    }
+});
