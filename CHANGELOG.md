@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-13
+
 ### Added
 
 - `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT=off` turns off the provider's prompt-cache marker. It is an escape hatch in case a future Claude Code release rejects requests for carrying too many cache markers; that error names this setting.
