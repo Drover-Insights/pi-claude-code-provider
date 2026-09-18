@@ -21,6 +21,7 @@ import { claimPaidTestLaunch } from "./paid-launch-budget.ts";
 import { ProcessTerminationError, superviseProcess } from "./process-utils.ts";
 import { removeRuntimeDirectory } from "./runtime-directories.ts";
 import { SessionImageStore, type ImageStoreLease } from "./session-image-store.ts";
+import type { ResolvedSession, SessionRequest } from "./session-registry.ts";
 import type { RateLimitNoticeSink } from "./claude-protocol.ts";
 import { ClaudeEventMapper, type ClaudeTerminationCause } from "./stream-events.ts";
 import type { ClaudeInstallation, LogicalProviderPayload, MutableOutput, RequestMetrics } from "./types.ts";
@@ -36,14 +37,16 @@ type ClaimLaunch = () => Promise<void>;
 
 export interface ClaudeStreamDependencies {
   cleanupDirectory?: CleanupDirectory;
-  onRateLimitNotice?: RateLimitNoticeSink;
   claimLaunch?: ClaimLaunch;
   supervise?: typeof superviseProcess;
   /**
-   * Pi's session working directory. Claude runs there so the working directory
-   * Claude Code reports to the model is the one Pi's tools resolve against.
+   * The Pi session this request belongs to. Claude runs in that session's
+   * working directory, so the directory Claude Code reports to the model is the
+   * one Pi's tools resolve against, and its image store and notifier belong to
+   * the same session rather than to whichever one registered the provider last.
    */
-  workingDirectory?: () => string | undefined;
+  resolveSession?: (request: SessionRequest) => ResolvedSession | { error: string } | undefined;
+  onRateLimitNotice?: RateLimitNoticeSink;
   imageStore?: SessionImageStore;
 }
 
@@ -52,15 +55,22 @@ export function createClaudeStream(
   dependencies: ClaudeStreamDependencies = {},
 ) {
   const cleanupDirectory = dependencies.cleanupDirectory ?? removeRuntimeDirectory;
-  const onRateLimitNotice = dependencies.onRateLimitNotice;
   const claimLaunch = dependencies.claimLaunch ?? claimPaidTestLaunch;
   const supervise = dependencies.supervise ?? superviseProcess;
-  const imageStore = dependencies.imageStore;
   return (model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream => {
     const stream = createAssistantMessageEventStream();
-    // Read once, when Pi starts the request: a session switch during asynchronous
-    // preparation must not move this request to another directory.
-    const sessionCwd = dependencies.workingDirectory?.();
+    // Resolved once, when Pi starts the request: a session starting or ending
+    // during asynchronous preparation must not move this request to another
+    // directory. The pre-hook prompt is used deliberately, because the session a
+    // request belongs to is not a payload hook's to change.
+    const session = dependencies.resolveSession?.({
+      sessionId: options?.sessionId,
+      systemPrompt: context.systemPrompt,
+      hasTools: (context.tools?.length ?? 0) > 0,
+    });
+    const resolved = session && "error" in session ? undefined : session;
+    const imageStore = resolved?.imageStore ?? dependencies.imageStore;
+    const onRateLimitNotice = resolved?.onRateLimitNotice ?? dependencies.onRateLimitNotice;
     const output = createOutput(model);
 
     void (async () => {
@@ -199,7 +209,8 @@ export function createClaudeStream(
         // Phase 1 — prepare Pi's logical payload and private transport state.
         const effectiveContext = await applyPayloadHook(model, context, options);
         metrics.lastPhase = "payload_applied";
-        cwd = await requireWorkingDirectory(sessionCwd);
+        cwd = await requireWorkingDirectory(session);
+        metrics.sessionResolution = resolved?.resolution;
         imageLease = imageStore?.acquire();
         metrics.messageCount = effectiveContext.messages.length;
         metrics.toolCount = effectiveContext.tools?.length ?? 0;
@@ -508,7 +519,9 @@ export function isExpectedToolHandoffExit(
  * before anything is prepared or launched, because substituting any other
  * directory would bring that contradiction back.
  */
-async function requireWorkingDirectory(directory: string | undefined): Promise<string> {
+async function requireWorkingDirectory(session: ResolvedSession | { error: string } | undefined): Promise<string> {
+  if (session && "error" in session) throw new ClaudeCodeError("working_directory", session.error);
+  const directory = session?.cwd;
   if (!directory) {
     throw new ClaudeCodeError(
       "working_directory",

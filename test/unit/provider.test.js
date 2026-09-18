@@ -68,7 +68,7 @@ let lastRequestStartedAt = 0;
 // Every provider request runs Claude in Pi's session directory; tests that are
 // not about that directory use the temporary root as the session.
 function createClaudeStream(installation, dependencies = {}) {
-    const streamSimple = createProviderStream(installation, { workingDirectory: () => tmpdir(), ...dependencies });
+    const streamSimple = createProviderStream(installation, { resolveSession: () => ({ cwd: tmpdir() }), ...dependencies });
     return (...request) => {
         while (Date.now() <= lastRequestStartedAt) { /* wait out the millisecond */ }
         metricsBeforeRequest = JSON.stringify(getLastRequestMetrics() ?? null);
@@ -338,7 +338,7 @@ process.stdin.on("end", () => {
     try {
         const result = await createClaudeStream(
             { executable: fake.executable, version: "test", subscriptionType: "pro" },
-            { workingDirectory: () => sessionDirectory },
+            { resolveSession: () => ({ cwd: sessionDirectory }) },
         )(model, context, { reasoning: "medium" }).result();
         assert.equal(result.stopReason, "stop", result.errorMessage);
         const reported = JSON.parse(result.content.find((block) => block.type === "text")?.text ?? "{}");
@@ -1392,7 +1392,7 @@ test("provider refuses an unusable session working directory before preparing or
             let claims = 0;
             const result = await createClaudeStream(
                 { executable: fake.executable, version: "test", subscriptionType: "pro" },
-                { workingDirectory: () => workingDirectory, claimLaunch: async () => { claims += 1; } },
+                { resolveSession: () => (workingDirectory === undefined ? undefined : { cwd: workingDirectory }), claimLaunch: async () => { claims += 1; } },
             )(model, context, { reasoning: "medium" }).result();
             assert.equal(result.stopReason, "error");
             assert.match(result.errorMessage ?? "", message);
@@ -1420,7 +1420,7 @@ test("provider does not retry elsewhere when the session directory disappears af
         const result = await createClaudeStream(
             { executable: fake.executable, version: "test", subscriptionType: "pro" },
             {
-                workingDirectory: () => sessionDirectory,
+                resolveSession: () => ({ cwd: sessionDirectory }),
                 claimLaunch: async () => {
                     claims += 1;
                     await rm(sessionDirectory, { recursive: true, force: true });
@@ -1455,7 +1455,7 @@ test("provider rejects image attachments from a temporary directory containing a
         };
         const result = await createClaudeStream(
             { executable: join(root, "never-launched"), version: "test", subscriptionType: "pro" },
-            { workingDirectory: () => root, claimLaunch: async () => { claims += 1; } },
+            { resolveSession: () => ({ cwd: root }), claimLaunch: async () => { claims += 1; } },
         )(model, imageContext, { reasoning: "medium" }).result();
         assert.equal(result.stopReason, "error");
         assert.match(result.errorMessage ?? "", /double quote/);

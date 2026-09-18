@@ -1,4 +1,5 @@
 import type { AssistantMessage, Context, Tool } from "@earendil-works/pi-ai";
+import type { SessionResolution } from "./session-registry.ts";
 
 export type ClaudeSubscriptionType = "pro" | "max" | "team" | "enterprise";
 
@@ -43,6 +44,8 @@ export interface RequestMetrics {
   effort: string;
   messageCount: number;
   toolCount: number;
+  /** Where this request's working directory came from; absent when no session was resolved. */
+  sessionResolution?: SessionResolution;
   imageCount: number;
   transcriptBytes: number;
   catalogBytes: number;

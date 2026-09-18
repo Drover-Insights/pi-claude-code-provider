@@ -16,6 +16,7 @@ import { flushMetricsLog, getLastRequestMetrics, getLastSearchMetrics, getMetric
 import { createClaudeStream } from "../src/provider.ts";
 import { cleanupStaleRuntimeDirectories, createRuntimeDirectory } from "../src/runtime-directories.ts";
 import { SessionImageStore } from "../src/session-image-store.ts";
+import { resolveSession, sessionRegistry } from "../src/session-registry.ts";
 import { searchWithClaude } from "../src/web-search.ts";
 import type { RateLimitNotice } from "../src/claude-protocol.ts";
 import type { RuntimeCleanupResult } from "../src/runtime-directories.ts";
@@ -43,9 +44,12 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
   const imageStore = new SessionImageStore();
   let searchRegistrationAttempted = false;
   let activeRateLimitNotify: ((notice: RateLimitNotice) => void) | undefined;
-  // Pi's session directory, not process.cwd(): a resumed session takes its cwd
-  // from the session file, and Pi's tools resolve paths against that one.
-  let sessionCwd: string | undefined;
+  // Sessions are registered process-wide, not in this closure: Pi hosts can run
+  // several sessions in one process, and a subagent child re-runs this factory
+  // while its siblings stay live. A request must resolve its own session's
+  // directory, image store and notifier, never the last one to register.
+  const sessions = sessionRegistry();
+  let ownSessionId: string | undefined;
 
   pi.registerProvider(PROVIDER, {
     name: "Claude Code Subscription",
@@ -54,19 +58,25 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
     api: "pi-claude-code-provider-headless",
     models: providerModels,
     streamSimple: createClaudeStream(installation, {
-      onRateLimitNotice: (notice) => activeRateLimitNotify?.(notice),
-      workingDirectory: () => sessionCwd,
-      imageStore,
+      resolveSession: (request) => resolveSession(sessions, request),
     }),
   });
 
   pi.on("session_start", (_event, ctx) => {
     searchOutputs.open();
     imageStore.open();
-    sessionCwd = ctx.cwd;
     // The provider starts a process per tool round-trip; session scope prevents
     // Claude's repeated notice from surfacing throughout one Pi turn.
     activeRateLimitNotify = createRateLimitNotifier((message) => ctx.ui.notify(message, "warning"));
+    // Pi's session directory, not process.cwd(): a resumed session takes its cwd
+    // from the session file, and Pi's tools resolve paths against that one.
+    if (ownSessionId !== undefined) sessions.delete(ownSessionId);
+    ownSessionId = ctx.sessionManager.getSessionId();
+    sessions.set(ownSessionId, {
+      cwd: ctx.cwd,
+      imageStore,
+      onRateLimitNotice: (notice) => activeRateLimitNotify?.(notice),
+    });
     const platformWarning = startupPlatformWarning(currentPlatform);
     if (platformWarning) ctx.ui.notify(`${NOTICE_PREFIX} ${platformWarning}`, "warning");
     if (searchRegistrationAttempted) return;
@@ -82,7 +92,9 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
 
   pi.on("session_shutdown", async () => {
     activeRateLimitNotify = undefined;
-    sessionCwd = undefined;
+    // Only this instance's own entry: another instance's sessions stay live.
+    if (ownSessionId !== undefined) sessions.delete(ownSessionId);
+    ownSessionId = undefined;
     try {
       await Promise.all([searchOutputs.close(), imageStore.close()]);
     } finally {

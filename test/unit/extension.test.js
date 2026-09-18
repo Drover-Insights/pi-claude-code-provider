@@ -10,6 +10,7 @@ import implementation from "../../extensions/pi-claude-code-provider.ts";
 import { VERIFIED_VERSIONS, platformStatus } from "../../src/compatibility.ts";
 import { CAPTURED_CLAUDE_HELP_PATH, ELIGIBLE_CLAUDE_AUTH } from "../support/claude-fixture.js";
 import { nodeFixtureSource } from "../support/node-fixture.js";
+import { sessionRegistry } from "../../src/session-registry.ts";
 
 const piClaudeCodeProvider = (pi) => initializePiClaudeCodeProvider(pi);
 
@@ -35,6 +36,21 @@ function fakePi(initialTools = []) {
             getAllTools() { return [...tools.values()]; },
         },
     };
+}
+
+// Sessions are registered process-wide, so one test leaving a session open would
+// silently change how the next test's requests resolve.
+test.beforeEach(() => {
+    assert.deepEqual([...sessionRegistry().keys()], []);
+});
+
+let sessionCounter = 0;
+
+// Pi identifies the session a request belongs to, so every started session needs
+// its own id; the provider keys its per-session state on it.
+function sessionContext(cwd, ui) {
+    const sessionId = `session-${++sessionCounter}`;
+    return { cwd, ui, sessionManager: { getSessionId: () => sessionId } };
 }
 
 async function createFakeClaude(searchResult = "ok", { searchDelayMs = 0, rateLimitInfo, reportCwd = false } = {}) {
@@ -72,7 +88,7 @@ test("platform acknowledgement hides only the startup advisory and leaves doctor
         const pi = fakePi();
         await piClaudeCodeProvider(pi.api);
         const notices = [];
-        const ctx = { cwd: tmpdir(), ui: { notify(message, level) { notices.push({ message, level }); } } };
+        const ctx = sessionContext(tmpdir(), { notify(message, level) { notices.push({ message, level }); } });
         delete process.env.PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM;
         pi.handlers.get("session_start")[0]({}, ctx);
         assert.ok(notices.some(({ message }) => message.includes(status.warning)));
@@ -126,7 +142,7 @@ test("routes rate-limit warnings to the active Pi UI and launches nothing before
         assert.match(early.errorMessage ?? "", /session working directory is not available/);
 
         const notices = [];
-        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify(message, level) { notices.push({ message, level }); } } });
+        pi.handlers.get("session_start")[0]({}, sessionContext(tmpdir(), { notify(message, level) { notices.push({ message, level }); } }));
         assert.equal((await provider.streamSimple(model, context, { reasoning: "medium" }).result()).stopReason, "stop");
         const warning = notices.find(({ message }) => message.includes("rate limit warning"));
         assert.deepEqual(warning, {
@@ -179,10 +195,13 @@ test("does not report a disabled overage as a rate limit", async () => {
             baseUrl: "pi-claude-code-provider://local",
         };
         const notices = [];
-        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify(message, level) { notices.push({ message, level }); } } });
+        pi.handlers.get("session_start")[0]({}, sessionContext(tmpdir(), { notify(message, level) { notices.push({ message, level }); } }));
         const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
         assert.equal((await provider.streamSimple(model, context, { reasoning: "medium" }).result()).stopReason, "stop");
         assert.deepEqual(notices.filter(({ message }) => message.includes("rate limit")), []);
+        // A session left open would stay registered for the whole test file, and
+        // the provider resolves an unknown request to the only live session.
+        await pi.handlers.get("session_shutdown")[0]({}, {});
     }
     finally {
         if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
@@ -215,7 +234,7 @@ test("reports a repeated rate-limit warning once per session", async () => {
             baseUrl: "pi-claude-code-provider://local",
         };
         const notices = [];
-        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify(message, level) { notices.push({ message, level }); } } });
+        pi.handlers.get("session_start")[0]({}, sessionContext(tmpdir(), { notify(message, level) { notices.push({ message, level }); } }));
         const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
         await provider.streamSimple(model, context, { reasoning: "medium" }).result();
         await provider.streamSimple(model, context, { reasoning: "medium" }).result();
@@ -227,9 +246,10 @@ test("reports a repeated rate-limit warning once per session", async () => {
         // A new session starts from a clean slate.
         await pi.handlers.get("session_shutdown")[0]({}, {});
         const later = [];
-        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify(message, level) { later.push({ message, level }); } } });
+        pi.handlers.get("session_start")[0]({}, sessionContext(tmpdir(), { notify(message, level) { later.push({ message, level }); } }));
         await provider.streamSimple(model, context, { reasoning: "medium" }).result();
         assert.equal(later.filter(({ message }) => message.includes("rate limit")).length, 1);
+        await pi.handlers.get("session_shutdown")[0]({}, {});
     }
     finally {
         if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
@@ -256,7 +276,7 @@ test("reports one warning while utilization moves within the displayed percent",
             baseUrl: "pi-claude-code-provider://local",
         };
         const notices = [];
-        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify(message, level) { notices.push({ message, level }); } } });
+        pi.handlers.get("session_start")[0]({}, sessionContext(tmpdir(), { notify(message, level) { notices.push({ message, level }); } }));
         const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
         await provider.streamSimple(model, context, { reasoning: "medium" }).result();
         assert.deepEqual(notices.filter(({ message }) => message.includes("rate limit")).map(({ message }) => message), [
@@ -298,7 +318,7 @@ test("converts fractional weekly utilization to a percentage", async () => {
         };
         const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
         const notices = [];
-        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify(message, level) { notices.push({ message, level }); } } });
+        pi.handlers.get("session_start")[0]({}, sessionContext(tmpdir(), { notify(message, level) { notices.push({ message, level }); } }));
         assert.equal((await provider.streamSimple(model, context, { reasoning: "medium" }).result()).stopReason, "stop");
         assert.deepEqual(notices.find(({ message }) => message.includes("rate limit warning")), {
             message: "[pi-claude-code-provider] Claude rate limit warning: 86% used (seven_day)",
@@ -327,7 +347,7 @@ test("failed preflight retains the doctor and reports one session error", async 
         const notices = [];
         const sessionStart = pi.handlers.get("session_start") ?? [];
         assert.equal(sessionStart.length, 1);
-        sessionStart[0]({}, { cwd: tmpdir(), ui: { notify(message, level) { notices.push({ message, level }); } } });
+        sessionStart[0]({}, sessionContext(tmpdir(), { notify(message, level) { notices.push({ message, level }); } }));
         assert.equal(notices.length, 1);
         assert.equal(notices[0].level, "error");
         assert.match(notices[0].message, /^\[pi-claude-code-provider\]/);
@@ -362,7 +382,7 @@ test("truncated web-search output is retained only for the session", async () =>
         const notices = [];
         const sessionStart = pi.handlers.get("session_start") ?? [];
         assert.equal(sessionStart.length, 1);
-        sessionStart[0]({}, { cwd: tmpdir(), ui: { notify(message, level) { notices.push({ message, level }); } } });
+        sessionStart[0]({}, sessionContext(tmpdir(), { notify(message, level) { notices.push({ message, level }); } }));
         assert.equal(pi.tools.get("web_search"), existingWebSearch);
         assert.equal(notices.some(({ message }) => /(?:Pi|Claude Code) .*unverified/.test(message)), false);
         assert.equal(notices.every(({ message }) => message.startsWith("[pi-claude-code-provider]")), true);
@@ -397,7 +417,7 @@ test("web-search output finishing after shutdown is not retained", async () => {
     try {
         const pi = fakePi();
         await piClaudeCodeProvider(pi.api);
-        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify() { } } });
+        pi.handlers.get("session_start")[0]({}, sessionContext(tmpdir(), { notify() { } }));
         const search = pi.tools.get("pi_claude_code_provider_web_search");
         const pending = search.execute("call", { query: "query" }, undefined);
         await pi.handlers.get("session_shutdown")[0]({}, {});
@@ -426,7 +446,7 @@ test("an occupied permanent web-search name is preserved with a prefixed warning
         const notices = [];
         const sessionStart = pi.handlers.get("session_start") ?? [];
         assert.equal(sessionStart.length, 1);
-        sessionStart[0]({}, { cwd: tmpdir(), ui: { notify(message, level) { notices.push({ message, level }); } } });
+        sessionStart[0]({}, sessionContext(tmpdir(), { notify(message, level) { notices.push({ message, level }); } }));
         assert.equal(pi.tools.get("pi_claude_code_provider_web_search"), existingSearch);
         const collision = notices.find(({ message }) => message.includes("tool name is already occupied"));
         assert.ok(collision);
@@ -434,9 +454,10 @@ test("an occupied permanent web-search name is preserved with a prefixed warning
         assert.match(collision.message, /^\[pi-claude-code-provider\]/);
         await pi.handlers.get("session_shutdown")[0]({}, {});
         const later = [];
-        sessionStart[0]({}, { cwd: tmpdir(), ui: { notify(message, level) { later.push({ message, level }); } } });
+        sessionStart[0]({}, sessionContext(tmpdir(), { notify(message, level) { later.push({ message, level }); } }));
         assert.equal(pi.tools.get("pi_claude_code_provider_web_search"), existingSearch);
         assert.equal(later.some(({ message }) => message.includes("tool name is already occupied")), false);
+        await pi.handlers.get("session_shutdown")[0]({}, {});
     }
     finally {
         if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
@@ -473,13 +494,13 @@ test("provider requests run Claude in the current Pi session's directory, never 
         // A resumed or imported session takes its cwd from the session file, so
         // the host process cwd is the wrong directory to report to Claude.
         assert.notEqual(await realpath(sessionB), await realpath(process.cwd()));
-        pi.handlers.get("session_start")[0]({}, { cwd: sessionB, ui });
+        pi.handlers.get("session_start")[0]({}, sessionContext(sessionB, ui));
         assert.equal(await realpath(await childCwd()), await realpath(sessionB));
         await pi.handlers.get("session_shutdown")[0]({}, {});
         const afterShutdown = await request();
         assert.equal(afterShutdown.stopReason, "error");
         assert.match(afterShutdown.errorMessage ?? "", /session working directory is not available/);
-        pi.handlers.get("session_start")[0]({}, { cwd: sessionC, ui });
+        pi.handlers.get("session_start")[0]({}, sessionContext(sessionC, ui));
         assert.equal(await realpath(await childCwd()), await realpath(sessionC));
         await pi.handlers.get("session_shutdown")[0]({}, {});
     }
@@ -487,6 +508,81 @@ test("provider requests run Claude in the current Pi session's directory, never 
         if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
         else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
         await Promise.all([directory, sessionB, sessionC].map((path) => rm(path, { recursive: true, force: true })));
+    }
+});
+
+test("parallel sessions each run in their own directory and survive each other's shutdown", async () => {
+    // A Pi host can run several sessions in one process. A background subagent
+    // runner re-runs this factory per child while its siblings stay live, and
+    // Pi's own model runtime keeps only the last registered streamSimple, so
+    // every request has to resolve the session it actually belongs to.
+    const { directory, executable } = await createFakeClaude("ok", { reportCwd: true });
+    const childA = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-child-a-"));
+    const childB = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-child-b-"));
+    const worktree = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-worktree-"));
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const start = async (cwd) => {
+            const pi = fakePi();
+            await piClaudeCodeProvider(pi.api);
+            const ctx = sessionContext(cwd, { notify() { } });
+            pi.handlers.get("session_start")[0]({}, ctx);
+            const provider = pi.providers.get("pi-claude-code-provider");
+            const configured = provider.models.find((model) => model.id === "sonnet");
+            return {
+                sessionId: ctx.sessionManager.getSessionId(),
+                shutdown: () => pi.handlers.get("session_shutdown")[0]({}, {}),
+                // The last instance to register owns Pi's streamSimple, so every
+                // request below deliberately goes through instance B's.
+                stream: provider.streamSimple,
+                model: {
+                    ...configured,
+                    provider: "pi-claude-code-provider",
+                    api: "pi-claude-code-provider-headless",
+                    baseUrl: "pi-claude-code-provider://local",
+                },
+            };
+        };
+        const context = (systemPrompt) => ({
+            messages: [{ role: "user", content: "hello", timestamp: 1 }],
+            tools: [],
+            ...(systemPrompt ? { systemPrompt } : {}),
+        });
+        const a = await start(childA);
+        const b = await start(childB);
+        const run = async (sessionId, systemPrompt) => {
+            const result = await b.stream(b.model, context(systemPrompt), { reasoning: "medium", sessionId }).result();
+            return result.stopReason === "stop"
+                ? await realpath(result.content.find((block) => block.type === "text")?.text)
+                : result.errorMessage;
+        };
+
+        // Each child's own requests reach its own directory, not the last one registered.
+        assert.equal(await run(a.sessionId), await realpath(childA));
+        assert.equal(await run(b.sessionId), await realpath(childB));
+        // A child Pi never started here, carrying the directory it works in.
+        assert.equal(await run("foreground-child", `Pi.
+
+Current working directory: ${worktree}`), await realpath(worktree));
+        // Pi's compaction one-shot: a fresh id, no tools, no stated directory.
+        assert.equal(await run("01a0-fresh-compaction"), await realpath(childB));
+        // The same unknown id with tools is refused rather than guessed.
+        const guessed = await b.stream(b.model, { ...context(), tools: [{ name: "read", description: "read", parameters: { type: "object" } }] }, { reasoning: "medium", sessionId: "01a0-fresh-compaction" }).result();
+        assert.equal(guessed.stopReason, "error");
+        assert.match(guessed.errorMessage ?? "", /never started through this provider and 2 sessions are live/);
+
+        // A surviving child keeps working, including its image store, after the
+        // session that registered the provider last has gone.
+        await b.shutdown();
+        assert.equal(await run(a.sessionId), await realpath(childA));
+        await a.shutdown();
+        assert.match(await run(a.sessionId), /session working directory is not available/);
+    }
+    finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([directory, childA, childB, worktree].map((path) => rm(path, { recursive: true, force: true })));
     }
 });
 
