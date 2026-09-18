@@ -35,7 +35,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { claudeExecutable, buildClaudeEnvironment } from "../src/auth.ts";
-import { providerArgs } from "../src/claude-args.ts";
+import { providerArgs, thinkingDisplay } from "../src/claude-args.ts";
 import { SessionImageStore } from "../src/session-image-store.ts";
 
 // Anthropic permits four cache breakpoints per request. A fifth is rejected
@@ -201,7 +201,10 @@ async function captureOnce(options, executable, home, project, imageStore) {
           }
         : {}),
     };
-    const { args, prompt } = providerArgs(prepared, options.model, options.effort, { transcriptBreakpoint: options.marker });
+    const { args, prompt } = providerArgs(prepared, options.model, options.effort, {
+      transcriptBreakpoint: options.marker,
+      thinkingDisplay: thinkingDisplay(),
+    });
     const env = buildClaudeEnvironment({
       HOME: home,
       ANTHROPIC_BASE_URL: baseUrl,
@@ -271,6 +274,10 @@ function report(captures, options, startup) {
 
   console.log(`served model:   ${body.model}`);
   console.log(`message roles:  ${(body.messages ?? []).map((message) => message.role).join(", ")}`);
+  // Thinking arrives with empty text unless the request asks for summarized
+  // display, and the flag carrying it is hidden from --help, so the wire body is
+  // the only proof it reached the API.
+  console.log(`thinking:       ${JSON.stringify(body.thinking ?? null)}`);
   const marked = blocks.flatMap(([label, block], position) => (block.cache_control ? [{ position, label, block }] : []));
   // The last breakpoint inside the transcript marks the prefix a later request
   // reuses. Only a change at or ahead of it invalidates that entry; the

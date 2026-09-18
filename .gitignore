@@ -4,6 +4,7 @@ package-lock.json
 /caching/
 /fastmode/
 /stream-recovery/
+/bridges/
 /IMPROVE.md
 /REVIEW.md
 .env

@@ -10,7 +10,7 @@ import type {
   SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { bridgeArgv, formatBridgeArgv, providerArgs, transcriptBreakpointEnabled } from "./claude-args.ts";
+import { bridgeArgv, formatBridgeArgv, providerArgs, thinkingDisplay, transcriptBreakpointEnabled } from "./claude-args.ts";
 import { claimClaudeLaunch, settleFailure, spawnClaudeProcess, type ClaudeProcess } from "./claude-process.ts";
 import { prepareRequest } from "./context-serializer.ts";
 import { appendCleanupFailure, ClaudeCodeError, errorCode, errorText } from "./errors.ts";
@@ -242,6 +242,7 @@ export function createClaudeStream(
         );
         const { args, prompt } = providerArgs(prepared, model.id, effort, {
           transcriptBreakpoint: transcriptBreakpointEnabled(),
+          thinkingDisplay: thinkingDisplay(),
         });
         const expectedTools = new Set(prepared.toolNames.keys());
         mapper = new ClaudeEventMapper({
