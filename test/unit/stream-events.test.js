@@ -285,13 +285,20 @@ test("does not reinterpret a tool acknowledgement after caller abort", async () 
     assert.equal(result.stopReason, "aborted");
     assert.equal(mapper.completeToolUse(), false);
 });
-test("rejects a tool acknowledgement while arguments remain incomplete", () => {
+test("rejects a tool acknowledgement while arguments remain incomplete", async () => {
     const stream = createAssistantMessageEventStream();
     const mapper = makeMapper(stream, createOutput(model), new Set(["mcp__pi__read"]), new Map([["mcp__pi__read", "read"]]), () => { });
     mapper.accept(initRecord(["mcp__pi__read"], [{ name: "pi", status: "connected" }]));
     mapper.accept({ type: "stream_event", event: { type: "message_start", message: { id: "msg_open", model: "claude-sonnet-5", usage: {} } } });
     mapper.accept({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_open", name: "mcp__pi__read", input: {} } } });
-    assert.throws(() => mapper.accept(exactToolTerminationResult(), "tool_handoff"), /unclosed content blocks/);
+    // No tool-use stop was reported, so this is not the provider's own handoff
+    // termination. The error result is now reported as the error it is rather than as a
+    // block-shape complaint, and the incomplete tool call is still never published.
+    mapper.accept(exactToolTerminationResult(), "tool_handoff");
+    assert.equal(mapper.completeToolUse(), false);
+    const result = await stream.result();
+    assert.equal(result.stopReason, "error");
+    assert.match(result.errorMessage, /Claude Code request failed/);
 });
 test("emits validated rate-limit notices and retains rejected diagnostics", () => {
     // Repeats are de-duplicated per session by the extension, not here; see
@@ -696,7 +703,7 @@ async function replayCapture(scenario) {
         else if (mapper.hasSuccessfulResult)
             mapper.completeResult();
         else if (!mapper.isTerminal)
-            mapper.fail("Claude Code exited before a terminal event");
+            mapper.fail(mapper.deferredFailure ?? "Claude Code exited before a terminal event");
     }
     const message = await stream.result();
     await consume;
@@ -711,6 +718,7 @@ const INTERRUPTED = [
     ["drop-tool", "a synthetic assistant error record"],
     ["drop-text-stop", "a synthetic user continuation turn"],
     ["sse-error", "a non-streaming replacement message"],
+    ["drop-partial-tool", "a drop inside streamed tool arguments"],
 ];
 for (const [scenario, signal] of INTERRUPTED) {
     test(`fails retryably when Claude Code recovers mid-response: ${signal}`, async () => {

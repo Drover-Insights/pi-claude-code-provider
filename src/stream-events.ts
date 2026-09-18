@@ -78,6 +78,7 @@ export class ClaudeEventMapper {
   private successfulResult: "stop" | "length" | undefined;
   private stopReason: string | undefined;
   private rejectedRateLimit: string | undefined;
+  private deferredToolArguments: string | undefined;
   private breakpointLimitRejected = false;
   private servedContextWindow: number | undefined;
   private servedMaxOutputTokens: number | undefined;
@@ -122,6 +123,18 @@ export class ClaudeEventMapper {
 
   get rateLimitFailure(): string | undefined {
     return this.rejectedRateLimit;
+  }
+
+  /** A held tool-argument failure, for the provider to report when no recovery signal claimed it. */
+  get deferredFailure(): string | undefined {
+    return this.deferredToolArguments;
+  }
+
+  private throwDeferredFailure(): void {
+    const message = this.deferredToolArguments;
+    if (!message) return;
+    this.deferredToolArguments = undefined;
+    throw new ClaudeCodeError("tool_arguments", message);
   }
 
   /** Whether the API rejected the request for carrying too many cache breakpoints. */
@@ -223,9 +236,8 @@ export class ClaudeEventMapper {
     // Before the response starts, a retry is an ordinary pre-stream retry that costs
     // nothing to let through. After a tool-use stop the provider is already terminating
     // Claude for handoff, and records about Claude's own next request must not
-    // invalidate a complete proposal.
-    // A max_tokens stop is followed by Claude Code's own continuation, which the length
-    // handoff owns.
+    // invalidate a complete proposal. A max_tokens stop is followed by Claude Code's own
+    // continuation, which the length handoff owns.
     if (!this.messageStarted || this.stopReason === "tool_use" || this.stopReason === "max_tokens") return;
     const raw = record as Record<string, unknown>;
     let cause: string | undefined;
@@ -397,7 +409,13 @@ export class ClaudeEventMapper {
           if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
           block.arguments = parsed as Record<string, unknown>;
         } catch {
-          throw new ClaudeCodeError("tool_arguments", `Claude emitted invalid arguments for tool ${block.name}`);
+          // A connection drop inside streamed tool arguments truncates the JSON. Claude
+          // Code then closes the block, stops the message and announces its recovery, so
+          // hold this failure: if a recovery signal follows, the retryable interruption
+          // is the accurate explanation. Nothing publishes the block either way.
+          this.deferredToolArguments = `Claude emitted invalid arguments for tool ${block.name}`;
+          this.blocks.delete(sourceIndex);
+          return;
         }
       }
       this.stream.push({ type: "toolcall_end", contentIndex: indexed.contentIndex, toolCall: block as ToolCall, partial: this.output });
@@ -407,7 +425,6 @@ export class ClaudeEventMapper {
 
   private acceptResult(record: StreamEventEnvelope, terminationCause: ClaudeTerminationCause): void {
     if (this.terminal) return;
-    if (this.blocks.size > 0) throw new ClaudeCodeError("protocol_blocks", "Claude result arrived with unclosed content blocks");
     // Stream envelopes are untrusted JSON despite the TypeScript interface.
     // Validate terminal fields before they can cross into Pi's typed output.
     if (typeof record.is_error !== "boolean") {
@@ -421,6 +438,7 @@ export class ClaudeEventMapper {
     this.applyModelUsage(record.modelUsage);
     if (record.is_error) {
       if (this.isExpectedHandoffTermination(record, terminationCause)) return;
+      this.throwDeferredFailure();
       const status = typeof record.api_error_status === "number" && Number.isFinite(record.api_error_status)
         ? ` (${record.api_error_status})`
         : "";
@@ -434,6 +452,11 @@ export class ClaudeEventMapper {
       this.fail(`Claude Code request failed${status}: ${detail}`);
       return;
     }
+    this.throwDeferredFailure();
+    // Only a successful result must account for every block it opened. An error result
+    // is reported as itself: the API failure is the useful message, and checking the
+    // block shape first hid it behind a protocol complaint.
+    if (this.blocks.size > 0) throw new ClaudeCodeError("protocol_blocks", "Claude result arrived with unclosed content blocks");
     if (record.stop_reason !== null && record.stop_reason !== undefined && this.stopReason === undefined) {
       this.stopReason = stopReason(record.stop_reason);
     }
@@ -457,6 +480,7 @@ export class ClaudeEventMapper {
 
   completeToolUse(): boolean {
     if (this.terminal) return false;
+    this.throwDeferredFailure();
     if (this.blocks.size > 0) throw new ClaudeCodeError("protocol_blocks", "Tool use completed with unclosed content blocks");
     if (!this.output.content.some((block) => block.type === "toolCall")) {
       throw new ClaudeCodeError("protocol_tool", "Claude reported tool use without a tool call");
@@ -476,6 +500,7 @@ export class ClaudeEventMapper {
    */
   completeLength(): boolean {
     if (this.terminal) return false;
+    this.throwDeferredFailure();
     if (this.blocks.size > 0) throw new ClaudeCodeError("protocol_blocks", "Output limit stop completed with unclosed content blocks");
     if (this.stopReason !== "max_tokens") throw new ClaudeCodeError("protocol_stop", "Claude did not report an output limit stop");
     this.terminal = true;

@@ -428,10 +428,11 @@ export function createClaudeStream(
             if (mapper.completeResult()) metrics.lastPhase = "completed";
           }
         } else if (!mapper.isTerminal) {
-          errorCategory ??= mapper.rateLimitFailure ? "rate_limit" : "process_exit";
+          errorCategory ??= mapper.deferredFailure ? "tool_arguments" : mapper.rateLimitFailure ? "rate_limit" : "process_exit";
           mapper.fail(
             await failureAfterCleanup(
-              mapper.rateLimitFailure ??
+              mapper.deferredFailure ??
+                mapper.rateLimitFailure ??
                 `Claude Code exited before a terminal event (code ${String(result.code)}, signal ${String(result.signal)})${stderrDetail()}`,
             ),
           );
