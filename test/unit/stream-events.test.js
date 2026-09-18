@@ -792,6 +792,35 @@ test("replays every captured scenario through Pi's own frame encoder and reducer
         assert.doesNotThrow(() => reduceAssistantMessageFrames(queuedFrames), `${scenario} (queued)`);
     }
 });
+test("a failure before the response starts still reduces through Pi's frames", async () => {
+    // A setup failure -- a rejected initialization, an aborted request -- publishes
+    // error and end with no preceding start. Every replay above begins with a
+    // validated init, so this is the one shape they do not cover, and the
+    // provider's own pre-mapper failure path emits it too.
+    const stream = createAssistantMessageEventStream();
+    const output = createOutput(model);
+    const encoder = new AssistantMessageFrameEncoder();
+    const frames = [];
+    const consume = (async () => {
+        for await (const event of stream) {
+            const frame = encoder.encode(event);
+            if (frame)
+                frames.push(frame);
+        }
+    })();
+    const mapper = makeMapper(stream, output, new Set(), new Map(), () => { });
+    mapper.fail("Claude Code initialized with an unexpected tool set");
+    await consume;
+    // Pi's encoder currently frames nothing for a bare error, and reducing an
+    // empty set is the guarantee that matters either way: neither half throws.
+    assert.doesNotThrow(() => reduceAssistantMessageFrames(frames));
+    // The failure reaches the consumer through the stream's own result, which is
+    // the path the provider's pre-mapper failures rely on.
+    const result = await stream.result();
+    assert.equal(result.stopReason, "error");
+    assert.match(result.errorMessage, /unexpected tool set/);
+});
+
 test("classifies api_retry categories that repeating the turn cannot clear", async () => {
     const stream = createAssistantMessageEventStream();
     const mapper = makeMapper(stream, createOutput(model), new Set(), new Map(), () => { });

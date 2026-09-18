@@ -7,7 +7,7 @@ import { MINIMUM_VERSIONS, VERIFIED_VERSIONS, versionStatus } from "../src/compa
 import { PI_PEERS, dependencyPolicyErrors, peerPackageName } from "./lib/dependency-policy.js";
 import { piLaunch } from "./lib/pi-installation.js";
 import { documentationPolicyErrors } from "./lib/documentation-policy.js";
-import { importedSpecifiers, repositoryFiles } from "./lib/source-policy.js";
+import { importedSpecifiers, repositoryFiles, unreferencedImportBindings } from "./lib/source-policy.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const sourceRoots = ["extensions", "src", "test", "scripts"];
@@ -74,6 +74,9 @@ for (const path of files.filter((candidate) => candidate.endsWith(".js") || cand
       continue;
     throw new Error(`Undeclared external import ${specifier} in ${relative(root, path)}`);
   }
+  const unreferenced = unreferencedImportBindings(source);
+  if (unreferenced.length)
+    throw new Error(`Unused import ${unreferenced.join(", ")} in ${relative(root, path)}`);
 }
 
 function commandVersion(command, args, pattern, required) {

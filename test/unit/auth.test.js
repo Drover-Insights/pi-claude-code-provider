@@ -59,6 +59,24 @@ test("builds an allowlisted Claude environment", () => {
         }
     }
 });
+test("refuses to forward a denied variable through the caller's own additions", () => {
+    // README and DESIGN.md promise these never reach a Claude child. `extra` is
+    // merged last, so without this the promise would rest on caller discipline.
+    for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"]) {
+        assert.throws(() => buildClaudeEnvironment({ [name]: "value" }), (error) => {
+            assert.equal(error.code, "environment_denied");
+            assert.match(error.message, new RegExp(`^${name} must never be forwarded`));
+            return true;
+        }, name);
+    }
+    // Windows environment names are case-insensitive, so an exact match alone
+    // would leave a bypass open on a supported platform.
+    assert.throws(() => buildClaudeEnvironment({ anthropic_api_key: "value" }), /must never be forwarded/);
+    // The additions production actually makes still pass through untouched.
+    const env = buildClaudeEnvironment({ CLAUDE_CODE_MAX_OUTPUT_TOKENS: "64000", PI_CLAUDE_TOOL_CATALOG: "/tmp/tools.json" });
+    assert.equal(env.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "64000");
+    assert.equal(env.PI_CLAUDE_TOOL_CATALOG, "/tmp/tools.json");
+});
 test("forwards a relocated Claude configuration and an extra CA bundle", () => {
     const forwarded = { CLAUDE_CONFIG_DIR: "/custom/claude-config", NODE_EXTRA_CA_CERTS: "/custom/corporate-ca.pem" };
     const originals = Object.fromEntries(Object.keys(forwarded).map((name) => [name, process.env[name]]));

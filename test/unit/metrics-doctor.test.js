@@ -12,7 +12,7 @@ import { appendRequestMetrics, appendSearchMetrics, flushMetricsLog, getLastRequ
 import { CAPTURED_CLAUDE_VERSION } from "../support/claude-fixture.js";
 
 const metrics = {
-    schemaVersion: 4, timestamp: "2026-07-12T00:00:00.000Z", platform: "linux", architecture: "x64", nodeVersion: "v24.16.0", claudeVersion: CAPTURED_CLAUDE_VERSION, requestedModel: "sonnet", resolvedModel: "claude-sonnet-5", effort: "medium",
+    schemaVersion: 5, timestamp: "2026-07-12T00:00:00.000Z", platform: "linux", architecture: "x64", nodeVersion: "v24.16.0", claudeVersion: CAPTURED_CLAUDE_VERSION, requestedModel: "sonnet", resolvedModel: "claude-sonnet-5", effort: "medium",
     messageCount: 2, toolCount: 1, imageCount: 0, transcriptBytes: 100, catalogBytes: 50, imageBytes: 0, estimatedInputTokens: 1000,
     servedContextWindow: 1000000, servedMaxOutputTokens: 64000, cacheRead: 10, cacheWrite: 20, inputTokens: 30, outputTokens: 2,
     cacheHitPercent: 16.67, durationMs: 250, lastPhase: "completed", cleanupComplete: true, stopReason: "stop", exitCode: 0, exitSignal: null, terminationExpected: false,
@@ -27,7 +27,7 @@ test("metrics serialization is content-free, appendable, and mode 0600", async (
         await appendRequestMetrics(path, { ...metrics, stopReason: "error", errorCategory: "protocol" });
         const lines = (await readFile(path, "utf8")).trim().split("\n").map(JSON.parse);
         assert.equal(lines.length, 2);
-        assert.equal(lines[0].schemaVersion, 4);
+        assert.equal(lines[0].schemaVersion, 5);
         assert.equal(lines[0].terminationExpected, false);
         assert.equal(lines[1].errorCategory, "protocol");
         if (process.platform !== "win32") assert.equal((await stat(path)).mode & 0o777, 0o600);
@@ -164,6 +164,42 @@ test("doctor summary puts one labeled fact on each line", () => {
     assert.equal(lines[0], "Platform linux/x64 (verified); Pi 1 (verified); Claude Code 2 (unverified; tested 1)");
     assert.deepEqual(lines.slice(1).map((line) => line.slice(0, line.indexOf(":"))), ["Runtime", "Claude", "Models", "Last request", "Metrics log error"]);
     assert.equal(lines[2], "Claude: /usr/bin/claude (pro subscription)");
+});
+
+test("doctor reports a served context window only once it stops matching the configured one", () => {
+    // The budget checks bound a request against the configured window, so a
+    // smaller served one makes them too permissive. The fixture's sonnet on Pro
+    // configures 1M, which the paid matrix has verified, so a match stays silent.
+    const base = doctorBase();
+    assert.doesNotMatch(formatDoctorSummary({ ...base, metrics }), /Context window:/);
+    const drifted = formatDoctorSummary({ ...base, metrics: { ...metrics, servedContextWindow: 200000 } });
+    assert.match(drifted, /^Context window: sonnet served 200000, configured 1000000; request budget checks use the configured value$/m);
+    // A larger served window is still a mismatch worth stating; only equality is silent.
+    assert.match(formatDoctorSummary({ ...base, metrics: { ...metrics, requestedModel: "haiku", servedContextWindow: 1000000 } }), /haiku served 1000000, configured 200000/);
+    // Nothing to compare against is not a finding.
+    assert.doesNotMatch(formatDoctorSummary({ ...base, metrics: { ...metrics, servedContextWindow: undefined } }), /Context window:/);
+    assert.doesNotMatch(formatDoctorSummary({ ...base, metrics: { ...metrics, requestedModel: "unknown-alias" } }), /Context window:/);
+});
+
+test("doctor reports collapsed prompt-cache reuse, and stays quiet where reuse proves nothing", () => {
+    // Losing reuse is otherwise silent, so the doctor is the only place it shows.
+    const base = doctorBase();
+    const cold = { ...metrics, messageCount: 8, estimatedInputTokens: 50000, cacheHitPercent: 0 };
+    const reported = formatDoctorSummary({ ...base, metrics: cold });
+    assert.match(reported, /^Prompt cache: last request reused 0% over 8 messages\./m);
+    // The wording must not let one reading stand as a diagnosis.
+    assert.match(reported, /One low reading is not evidence/);
+    assert.match(reported, /summary requests never reuse/);
+    // Each condition alone suppresses it: healthy reuse, a first turn with no
+    // prefix to reuse, a request too small for any model to cache, and usage
+    // Claude never reported.
+    assert.doesNotMatch(formatDoctorSummary({ ...base, metrics: { ...cold, cacheHitPercent: 97 } }), /Prompt cache:/);
+    assert.doesNotMatch(formatDoctorSummary({ ...base, metrics: { ...cold, messageCount: 1 } }), /Prompt cache:/);
+    assert.doesNotMatch(formatDoctorSummary({ ...base, metrics: { ...cold, estimatedInputTokens: 500 } }), /Prompt cache:/);
+    assert.doesNotMatch(formatDoctorSummary({ ...base, metrics: { ...cold, cacheHitPercent: undefined } }), /Prompt cache:/);
+    // The fixture request is far below the cacheable floor, so the ordinary
+    // summary gains no line at all.
+    assert.doesNotMatch(formatDoctorSummary({ ...base, metrics }), /Prompt cache:/);
 });
 
 test("the diagnostic report records whether the transcript breakpoint is disabled", async () => {

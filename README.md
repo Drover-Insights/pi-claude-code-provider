@@ -60,11 +60,11 @@ After installation or an upstream update, run:
 /pi-claude-code-provider-doctor
 ```
 
-It names the concrete model each alias is currently served, alongside the resolved versions, runtime, and bridge handshake, without consuming subscription quota.
+It names the concrete model each alias is currently served, alongside the resolved versions, runtime, and bridge handshake, without consuming subscription quota. It also reports the last request's prompt-cache reuse, and names a context window Claude Code has stopped serving as configured.
 
 Run `/pi-claude-code-provider-doctor report` to write a bounded, content-free JSON diagnostic report in a private temporary directory. Inspect the report before sharing it.
 
-The package also registers `pi_claude_code_provider_web_search`, a visible Pi tool that runs Claude with only WebSearch and WebFetch. It is skipped with a warning if another extension already owns that name. Truncated full results are removed at session shutdown.
+The package also registers `pi_claude_code_provider_web_search`, a visible Pi tool that runs Claude with only WebSearch and WebFetch. Searches always run Sonnet at medium effort under a three-minute limit, whichever model Pi is set to, so they draw on Sonnet capacity rather than the selected model's. It is skipped with a warning if another extension already owns that name. Truncated full results are removed at session shutdown.
 
 ## Subscription usage
 
@@ -87,8 +87,8 @@ Images remain available to Claude throughout the current Pi context, including a
 | `PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM` | Exact platform/architecture (for example `linux/arm64`) whose startup compatibility advisory you acknowledge and wish to hide. Unset by default. Does not mark the platform verified or hide doctor/report metadata, authentication errors, rate-limit notices, or runtime validation failures. |
 | `PI_CLAUDE_CODE_PROVIDER_PATH` | Override the `claude` executable path. |
 | `PI_CLAUDE_CODE_PROVIDER_METRICS_LOG` | Append content-free request and search metrics as JSONL. |
-| `PI_CLAUDE_CODE_PROVIDER_IDLE_TIMEOUT_MS` | Override the five-minute protocol-idle timeout with positive milliseconds. |
-| `PI_CLAUDE_CODE_PROVIDER_TOTAL_TIMEOUT_MS` | Override the 30-minute total timeout with positive milliseconds. |
+| `PI_CLAUDE_CODE_PROVIDER_IDLE_TIMEOUT_MS` | Override the five-minute protocol-idle timeout with positive milliseconds. Provider requests only. |
+| `PI_CLAUDE_CODE_PROVIDER_TOTAL_TIMEOUT_MS` | Override the 30-minute total timeout with positive milliseconds. Provider requests only; web search keeps its own three-minute limit. |
 | `PI_CLAUDE_CODE_PROVIDER_MCP_READY_TIMEOUT_MS` | Override the five-second tool-catalog readiness timeout with positive milliseconds. |
 | `PI_CLAUDE_CODE_PROVIDER_THINKING_DISPLAY` | `summarized` (default), `omitted`, or `off`. `omitted` hides thinking text, which reaches the first reply text sooner and keeps later requests smaller. `off` sends no display request at all; use it only if a Claude Code release rejects the option. |
 | `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT` | `on` (default) or `off`. `off` drops the provider's own prompt-cache breakpoint, which loses prompt caching; use it only when a Claude Code release fails requests for carrying too many cache breakpoints. |

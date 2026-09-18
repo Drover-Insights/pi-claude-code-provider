@@ -150,7 +150,7 @@ setTimeout(() => {
         assert.deepEqual(captured.catalog, [{ name: "read", description: "read", inputSchema: toolContext.tools[0].parameters }]);
         assert.ok(captured.files.some((name) => /^image-[0-9a-f]{64}\.png$/.test(name)));
         const metrics = await waitForRequestMetrics((entry) => entry.stopReason === "stop");
-        assert.equal(metrics.schemaVersion, 4);
+        assert.equal(metrics.schemaVersion, 5);
         assert.equal(metrics.messageCount, replacement.messages.length);
         assert.equal(metrics.toolCount, 1);
         assert.equal(metrics.imageCount, 1);
@@ -1537,6 +1537,42 @@ test("provider fails retryably and cleans up when Claude Code recovers mid-respo
         assert.match(result.errorMessage ?? "", /stream ended before message_stop \(Claude Code began retrying: unknown\)/);
         assert.equal(isRetryableAssistantError(result), true);
         const metrics = await waitForRequestMetrics((entry) => entry.errorCategory === "stream_interrupted");
+        assert.equal(metrics.cleanupComplete, true);
+    }
+    finally {
+        await rm(fake.dir, { recursive: true, force: true });
+    }
+});
+test("provider publishes an output-limit response whose process exited before termination landed", async () => {
+    // Claude Code can finish the continuation turn it starts after an output limit
+    // and exit cleanly before the background termination arrives. The response Pi
+    // asked for is complete and already mapped by then, so the turn must publish
+    // rather than fail on an exit code the handoff did not expect. The captured
+    // stream is replayed whole, ending in Claude Code's own successful result.
+    const records = streamRecoveryRecords("max-tokens")
+        .filter((record) => !(record.type === "system" && record.subtype === "init"))
+        .map((record) => JSON.stringify(record));
+    const fake = await fakeClaude(`
+process.on("SIGTERM", () => {});
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify(${JSON.stringify(init)}) + "\\n");
+  for (const record of ${JSON.stringify(records)}) process.stdout.write(record + "\\n");
+  process.stdout.write("", () => process.exit(0));
+});`);
+    try {
+        const stream = createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" })(model, context, { reasoning: "medium" });
+        const events = [];
+        for await (const event of stream)
+            events.push(event.type);
+        const result = await stream.result();
+        assert.equal(result.stopReason, "length", result.errorMessage);
+        assert.equal(events.at(-1), "done");
+        // Only the response Pi asked for is published; the continuation turn's
+        // blocks were latched out of the stream.
+        assert.equal(result.content.some((block) => block.type === "text" && block.text.length > 0), true);
+        const metrics = await waitForRequestMetrics((entry) => entry.lastPhase === "completed");
+        assert.equal(metrics.exitCode, 0);
         assert.equal(metrics.cleanupComplete, true);
     }
     finally {

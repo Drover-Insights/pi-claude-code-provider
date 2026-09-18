@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { deflateSync } from "node:zlib";
-import { assistantReply, closeLiveRpcProcess, consumeJsonl, describeThinking, superviseLiveProcess, thinkingTextSeen } from "./lib/live-process.js";
+import { assistantReply, closeLiveRpcProcess, consumeJsonl, superviseLiveProcess, thinkingTextSeen } from "./lib/live-process.js";
 import { describePiLaunch, livePiLaunch, locatePiPackages, packageEntry } from "./lib/pi-installation.js";
 if (process.env.PI_CLAUDE_CODE_PROVIDER_PAID_TEST_CHILD !== "1") {
     throw new Error("Paid live tests must be started through an npm test:paid:* script");

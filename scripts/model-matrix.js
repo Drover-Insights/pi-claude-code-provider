@@ -98,6 +98,10 @@ async function runCase(cwd, model, effort) {
     if (installation.subscriptionType === "pro" && model === "opus") {
         assert.equal(configured.contextWindow, 200_000, `${model}:${effort} safe configured context window`);
     }
+    // Weaker than it looks, and deliberately kept: the provider sets
+    // CLAUDE_CODE_MAX_OUTPUT_TOKENS to this same value, so this asserts the
+    // request carried it rather than that the model offers it. The served
+    // context window above is the independent capability assertion.
     assert.equal(metrics.servedMaxOutputTokens, configured.maxTokens, `${model}:${effort} served maximum output`);
     const leaked = (await runtimeDirectories()).filter((name) => !runtimeBefore.includes(name));
     assert.deepEqual(leaked, [], `${model}:${effort} left private runtime directories`);

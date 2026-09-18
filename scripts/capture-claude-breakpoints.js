@@ -205,12 +205,14 @@ async function captureOnce(options, executable, home, project, imageStore) {
       transcriptBreakpoint: options.marker,
       thinkingDisplay: thinkingDisplay(),
     });
-    const env = buildClaudeEnvironment({
-      HOME: home,
+    // The loopback base URL and dummy token are exactly what
+    // buildClaudeEnvironment refuses to forward. This capture overrides them
+    // after that call, where the override is visible, rather than through it.
+    const env = {
+      ...buildClaudeEnvironment({ HOME: home, CLAUDE_CODE_MAX_OUTPUT_TOKENS: "64000" }),
       ANTHROPIC_BASE_URL: baseUrl,
       CLAUDE_CODE_OAUTH_TOKEN: "local-capture-dummy-oauth-token",
-      CLAUDE_CODE_MAX_OUTPUT_TOKENS: "64000",
-    });
+    };
     // An inherited proxy would send this capture off the loopback interface.
     for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]) delete env[name];
     // A relocated configuration directory would expose the account this capture must never read.

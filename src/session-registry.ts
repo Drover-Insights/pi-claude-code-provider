@@ -50,10 +50,21 @@ export function sessionRegistry(): Map<string, SessionEntry> {
  * directly for a request whose session is unknown, where this is the only source
  * of truth, and as a refusal for one whose session is known, where a disagreeing
  * prompt fails the request.
+ *
+ * Ordering alone is a defense this package cannot verify, though: it holds only
+ * while Pi keeps rendering project context first, and a change there would be
+ * silent. A section nested inside a project-context element is therefore
+ * discarded outright, whatever its position, and the last-match rule stays as the
+ * second line of defense rather than the only one.
  */
+const PROJECT_CONTEXT_SPAN = /<(project_context|project_instructions)\b[^>]*>[\s\S]*?<\/\1>/g;
+
 export function promptWorkingDirectory(systemPrompt: string | undefined): string | undefined {
   if (!systemPrompt) return undefined;
-  const sections = [...systemPrompt.matchAll(/<cwd>\r?\n([^\n]+)\r?\n<\/cwd>/g)];
+  const repositoryAuthored = [...systemPrompt.matchAll(PROJECT_CONTEXT_SPAN)]
+    .map((span) => [span.index, span.index + span[0].length] as const);
+  const sections = [...systemPrompt.matchAll(/<cwd>\r?\n([^\n]+)\r?\n<\/cwd>/g)]
+    .filter((section) => !repositoryAuthored.some(([start, end]) => section.index >= start && section.index < end));
   const stated = sections.at(-1)?.[1] ?? /\r?\nCurrent working directory: ([^\n]+)\s*$/.exec(systemPrompt)?.[1];
   return stated?.trim() || undefined;
 }

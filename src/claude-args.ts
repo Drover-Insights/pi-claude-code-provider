@@ -9,7 +9,7 @@ import type { PreparedRequest } from "./types.ts";
 // Claude Code otherwise appends a changing <total_tokens> reminder that breaks
 // append-only cache reuse across this provider's fresh print-mode processes.
 const SETTINGS = JSON.stringify({ disableAllHooks: true, autoMemoryEnabled: false, totalTokensReminder: "off" });
-const EMPTY_MCP = JSON.stringify({ mcpServers: {} });
+export const EMPTY_MCP = JSON.stringify({ mcpServers: {} });
 export const BRIDGE_PATH = fileURLToPath(new URL("../bridge/mcp-proposal-server.js", import.meta.url));
 
 // Claude Code places no cache breakpoint inside the history this provider
@@ -39,7 +39,7 @@ export function transcriptBreakpointEnabled(environment: NodeJS.ProcessEnv = pro
  * is absent from REQUIRED_HEADLESS_FLAGS; `off` is the escape hatch for a
  * release that changes it.
  */
-export const THINKING_DISPLAY_ENV = "PI_CLAUDE_CODE_PROVIDER_THINKING_DISPLAY";
+const THINKING_DISPLAY_ENV = "PI_CLAUDE_CODE_PROVIDER_THINKING_DISPLAY";
 
 /** Unset or `summarized` shows thinking text; `omitted` hides it; `off` sends no flag. */
 export function thinkingDisplay(environment: NodeJS.ProcessEnv = process.env): "summarized" | "omitted" | undefined {

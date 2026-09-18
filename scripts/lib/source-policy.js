@@ -35,6 +35,40 @@ function filesystemFiles(path) {
   return files;
 }
 
+/**
+ * Import bindings a file never mentions again, using the same pinned parser as
+ * importedSpecifiers rather than a second, weaker scan.
+ *
+ * A shorthand property, a member name and a local that shadows an import all
+ * count as references, so this under-reports rather than over-reports. That is
+ * the correct direction for a gate: a false positive gets the rule disabled,
+ * while a missed dead import costs only tidiness.
+ */
+export function unreferencedImportBindings(source) {
+  const file = ts.createSourceFile("policy-source.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const bound = new Set();
+  const referenced = new Set();
+  const bind = (clause) => {
+    if (!clause) return;
+    if (clause.name) bound.add(clause.name.text);
+    const named = clause.namedBindings;
+    if (!named) return;
+    if (ts.isNamespaceImport(named)) bound.add(named.name.text);
+    else for (const element of named.elements) bound.add(element.name.text);
+  };
+  const visit = (node) => {
+    // Skipped without descending: the names an import introduces are not uses of
+    // themselves. A re-export (`export { x } from`) is not an import and is
+    // therefore never reported.
+    if (ts.isImportDeclaration(node)) return bind(node.importClause);
+    if (ts.isImportEqualsDeclaration(node)) return void bound.add(node.name.text);
+    if (ts.isIdentifier(node)) referenced.add(node.text);
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return [...bound].filter((name) => !referenced.has(name));
+}
+
 /** Use the pinned parser rather than maintaining a partial JavaScript tokenizer. */
 export function importedSpecifiers(source) {
   const file = ts.createSourceFile("policy-source.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);

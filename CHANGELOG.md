@@ -2,8 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/pi-claude-code-provider-doctor` reports how much of the last request Claude reused from its prompt cache, and says so plainly when an established conversation reused almost nothing. Losing cache reuse is otherwise silent: turns simply get slower and cost more. One low reading is not a diagnosis, and the doctor says that too.
+- `/pi-claude-code-provider-doctor` names a model whose context window Claude Code has stopped serving at the size this package advertises. The size checks that reject an over-large request before it is sent use the advertised value, so a quieter window would let a request through that the API then refuses mid-answer.
+
+### Changed
+
+- In the optional metrics log, `imageCount` now counts image content blocks rather than the files written for them, so it matches the number an "At most 20 images" rejection actually counted. Identical images are still stored and sent once. The log's schema version is now 5.
+
 ### Fixed
 
+- A reply that reached the output limit is no longer discarded when Claude Code finishes and exits on its own first. It ended the turn with "output limit handoff exited unexpectedly" in that case, throwing away a complete answer you had already paid for.
 - Another extension running its own agent loop on a provider model no longer exits Pi. Those calls, and `completeSimple`, resolve the model through Pi-AI's API registry, which this provider did not serve, and Pi does not catch the resulting failure. They are served as ordinary requests now; the calling extension still runs any tool itself. Pi-AI describes the entrypoint carrying that registry as temporary, so a Pi release that removes it costs only these side requests rather than the whole provider.
 - A Pi session ending no longer fails a request that was already running elsewhere. With several sessions in one process, a request placed on a session's image store could fail with `image_path` when that session exited while the request was still being prepared — even when the request carried no images.
 - Requests from parallel Pi sessions now each run in their own working directory. With more than one session in a process — Pi subagents, most visibly — requests could run Claude in another session's project while Pi's own tools worked in theirs, and a session outliving the one that registered the provider stopped working altogether. Each session's image store and rate-limit notices are now its own too. A subagent working in its own directory or worktree runs there; a request that cannot be placed with certainty fails with `working_directory` instead of guessing.

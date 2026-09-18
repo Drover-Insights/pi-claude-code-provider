@@ -104,7 +104,7 @@ export function createClaudeStream(
       let processLivenessUnknown = false;
       let finalized = false;
       const metrics: RequestMetrics = {
-        schemaVersion: 4,
+        schemaVersion: 5,
         timestamp: new Date(startedAt).toISOString(),
         platform: process.platform,
         architecture: process.arch,
@@ -245,7 +245,7 @@ export function createClaudeStream(
           systemPromptBytes,
           prepared.attachmentPaths.length,
         );
-        metrics.imageCount = prepared.attachmentPaths.length;
+        metrics.imageCount = prepared.imageCount;
         metrics.transcriptBytes = prepared.transcriptBytes;
         metrics.catalogBytes = prepared.catalogBytes;
         metrics.imageBytes = prepared.imageBytes;
@@ -404,7 +404,31 @@ export function createClaudeStream(
           const excerpt = running.stderrExcerpt();
           return excerpt ? `: ${excerpt}` : "";
         };
+        // Both handoffs settle identically: the provider terminated Claude on
+        // purpose, so an already-terminal mapper only cleans up, an unaccepted exit
+        // fails, and an accepted one publishes after cleanup. Only the accepted
+        // exits, the completion call and the wording differ. Aliased because a
+        // closure does not keep the narrowing this straight-line code has.
+        const settling = mapper;
+        const settleHandoff = async (label: string, exitAccepted: boolean, complete: () => boolean): Promise<void> => {
+          if (settling.isTerminal) {
+            await cleanupPrepared();
+          } else if (!exitAccepted) {
+            errorCategory = "process_exit";
+            settling.fail(
+              await failureAfterCleanup(
+                `Claude Code ${label} exited unexpectedly (code ${String(result.code)}, signal ${String(result.signal)})`,
+              ),
+            );
+          } else {
+            await cleanupPrepared();
+            if (complete()) metrics.lastPhase = "completed";
+          }
+        };
         if (toolUse) {
+          // These two precede settlement and belong to the tool handoff alone:
+          // an output limit proposes nothing that could have been executed or
+          // aimed at private state.
           if (prepared.violationPath && (await pathExists(prepared.violationPath))) {
             errorCategory = "mcp_execution";
             mapper.fail(
@@ -417,33 +441,23 @@ export function createClaudeStream(
             mapper.fail(
               await failureAfterCleanup("Claude Code proposed a Pi tool call against provider-private transport state"),
             );
-          } else if (mapper.isTerminal) {
-            await cleanupPrepared();
-          } else if (!isExpectedToolHandoffExit(result)) {
-            errorCategory = "process_exit";
-            mapper.fail(
-              await failureAfterCleanup(
-                `Claude Code tool handoff exited unexpectedly (code ${String(result.code)}, signal ${String(result.signal)})`,
-              ),
-            );
           } else {
-            await cleanupPrepared();
-            if (mapper.completeToolUse()) metrics.lastPhase = "completed";
+            await settleHandoff("tool handoff", isExpectedToolHandoffExit(result), () => settling.completeToolUse());
           }
         } else if (lengthStop) {
-          if (mapper.isTerminal) {
-            await cleanupPrepared();
-          } else if (!isExpectedToolHandoffExit(result)) {
-            errorCategory = "process_exit";
-            mapper.fail(
-              await failureAfterCleanup(
-                `Claude Code output limit handoff exited unexpectedly (code ${String(result.code)}, signal ${String(result.signal)})`,
-              ),
-            );
-          } else {
-            await cleanupPrepared();
-            if (mapper.completeLength()) metrics.lastPhase = "completed";
-          }
+          // Claude Code can finish the continuation turn it starts after an output
+          // limit and exit cleanly before the background termination lands. The
+          // response Pi asked for is complete and already mapped by then, so
+          // publish it rather than failing a turn that succeeded. completeLength()
+          // still requires the max_tokens stop, so this widens nothing. In that
+          // race the result record's usage covers the continuation turn too, which
+          // is left as reported rather than corrected.
+          const finishedBeforeTermination = mapper.hasSuccessfulResult && result.code === 0 && result.signal === null;
+          await settleHandoff(
+            "output limit handoff",
+            isExpectedToolHandoffExit(result) || finishedBeforeTermination,
+            () => settling.completeLength(),
+          );
         } else if (mapper.hasSuccessfulResult) {
           if (result.code !== 0 || result.signal !== null) {
             errorCategory ??= "process_exit";

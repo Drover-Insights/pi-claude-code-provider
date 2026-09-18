@@ -192,11 +192,14 @@ async function captureScenario(scenario, executable) {
     };
     const { args, prompt } = providerArgs(prepared, "sonnet", "low");
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const env = buildClaudeEnvironment({
-      HOME: home,
+    // The loopback base URL and dummy token are exactly what
+    // buildClaudeEnvironment refuses to forward. This capture overrides them
+    // after that call, where the override is visible, rather than through it.
+    const env = {
+      ...buildClaudeEnvironment({ HOME: home }),
       ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.address().port}`,
       CLAUDE_CODE_OAUTH_TOKEN: "local-capture-dummy-oauth-token",
-    });
+    };
     // An inherited proxy would send this capture off the loopback interface, and a
     // relocated configuration directory would expose the account it must never read.
     for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "CLAUDE_CONFIG_DIR"]) delete env[name];

@@ -2,7 +2,7 @@ import { constants } from "node:fs";
 import { accessSync, closeSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { delimiter, dirname, join, parse } from "node:path";
 
-export function findOnPath(name) {
+function findOnPath(name) {
   const extensions = process.platform === "win32"
     ? ["", ...(process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").map((value) => value.toLowerCase())]
     : [""];

@@ -255,6 +255,9 @@ test("deduplicates identical images and enforces the image-count limit", async (
     try {
         assert.equal(prepared.attachmentPaths.length, 1);
         assert.equal(prepared.imageBytes, Buffer.byteLength("same image"));
+        // The count reported is the one the limit applies, so an image_count
+        // rejection and the metrics it logs cannot contradict each other.
+        assert.equal(prepared.imageCount, 2);
     }
     finally {
         await rm(prepared.directory, { recursive: true, force: true });

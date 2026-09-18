@@ -144,8 +144,12 @@ export class ClaudeEventMapper {
 
   /** Wait for an asynchronous response observer before mapping Claude's response body. */
   async settleResponseAnnouncement(): Promise<void> {
-    if (!this.responseAnnouncement) return;
-    await this.responseAnnouncement;
+    const announcement = this.responseAnnouncement;
+    if (!announcement) return;
+    await announcement;
+    // Cleared only once it resolves, so the rest of the response stops re-awaiting
+    // a settled promise on every record while a rejection still reaches each caller.
+    this.responseAnnouncement = undefined;
     this.startResponse();
   }
 
