@@ -20,9 +20,8 @@ import { createOutput } from "./output.ts";
 import { claimPaidTestLaunch } from "./paid-launch-budget.ts";
 import { ProcessTerminationError, superviseProcess } from "./process-utils.ts";
 import { removeRuntimeDirectory } from "./runtime-directories.ts";
-import { SessionImageStore, type ImageStoreLease } from "./session-image-store.ts";
+import type { ImageStoreLease } from "./session-image-store.ts";
 import type { ResolvedSession, SessionRequest } from "./session-registry.ts";
-import type { RateLimitNoticeSink } from "./claude-protocol.ts";
 import { ClaudeEventMapper, type ClaudeTerminationCause } from "./stream-events.ts";
 import type { ClaudeInstallation, LogicalProviderPayload, MutableOutput, RequestMetrics } from "./types.ts";
 
@@ -40,14 +39,15 @@ export interface ClaudeStreamDependencies {
   claimLaunch?: ClaimLaunch;
   supervise?: typeof superviseProcess;
   /**
-   * The Pi session this request belongs to. Claude runs in that session's
-   * working directory, so the directory Claude Code reports to the model is the
-   * one Pi's tools resolve against, and its image store and notifier belong to
-   * the same session rather than to whichever one registered the provider last.
+   * The Pi session this request belongs to, and the only source of per-session
+   * state. Claude runs in that session's working directory, so the directory
+   * Claude Code reports to the model is the one Pi's tools resolve against, and
+   * its image store and notifier belong to the same session rather than to
+   * whichever one registered the provider last. There is deliberately no
+   * fallback beside it: one would be a way to run a request that belongs to no
+   * resolved session, which is the defect this replaced.
    */
   resolveSession?: (request: SessionRequest) => ResolvedSession | { error: string } | undefined;
-  onRateLimitNotice?: RateLimitNoticeSink;
-  imageStore?: SessionImageStore;
 }
 
 export function createClaudeStream(
@@ -69,8 +69,8 @@ export function createClaudeStream(
       hasTools: (context.tools?.length ?? 0) > 0,
     });
     const resolved = session && "error" in session ? undefined : session;
-    const imageStore = resolved?.imageStore ?? dependencies.imageStore;
-    const onRateLimitNotice = resolved?.onRateLimitNotice ?? dependencies.onRateLimitNotice;
+    const imageStore = resolved?.imageStore;
+    const onRateLimitNotice = resolved?.onRateLimitNotice;
     const output = createOutput(model);
 
     void (async () => {
