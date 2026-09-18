@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { EXPECTED_MODEL_FAMILIES } from "../src/compatibility.ts";
 import { inspectClaudeInstallation } from "../src/auth.ts";
 import { providerModelsForSubscription } from "../src/catalog.ts";
-import { assistantReply, consumeJsonl, superviseLiveProcess } from "./lib/live-process.js";
+import { assistantReply, consumeJsonl, superviseLiveProcess, thinkingTextSeen } from "./lib/live-process.js";
 import { livePiLaunch } from "./lib/pi-installation.js";
 import { servedContextWindowMatches } from "./lib/model-matrix-policy.js";
 
@@ -105,6 +105,7 @@ async function runCase(cwd, model, effort) {
         resolvedModel: message.responseModel,
         contextWindow: metrics.servedContextWindow,
         maxOutputTokens: metrics.servedMaxOutputTokens,
+        thinkingTextSeen: thinkingTextSeen(message),
     };
 }
 
@@ -112,7 +113,9 @@ const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-matrix-"
 try {
     for (const { model, effort } of selectedCases) {
         const served = await runCase(directory, model, effort);
-        console.log(`ok - ${model}:${effort} -> ${served.resolvedModel}; context ${served.contextWindow}, max output ${served.maxOutputTokens}`);
+        // Empty thinking already failed the case inside assistantReply; this says
+        // whether the alias thought at all, so a vacuous pass is visible per alias.
+        console.log(`ok - ${model}:${effort} -> ${served.resolvedModel}; context ${served.contextWindow}, max output ${served.maxOutputTokens}; thinking text ${served.thinkingTextSeen ? "seen" : "absent"}`);
     }
     console.log(`ok - ${selectedCases.length} blocking model/effort combinations passed`);
 }

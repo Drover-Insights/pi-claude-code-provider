@@ -72,12 +72,38 @@ export async function closeLiveRpcProcess(child, supervisor, closed, graceMs = 2
  * The final assistant message among Pi's events. A turn that ended in a provider
  * error (usage credits off, a rate limit, a lost login) carries no text, so its
  * error is reported by name instead of failing a reply assertion on "".
+ *
+ * Every live and paid stage reads its replies through here, so the empty-thinking
+ * check belongs here rather than at each call site: the model matrix runs it for
+ * every alias and effort, which is the surface the defect appeared on.
  */
 export function assistantReply(events, label) {
   const message = events.filter((event) => event.type === "message_end" && event.message?.role === "assistant").at(-1)?.message;
   if (!message) throw new Error(`${label} returned no assistant message`);
   if (message.stopReason === "error") throw new Error(`${label}: ${message.errorMessage ?? "unknown assistant error"}`);
+  // Claude Code returns thinking blocks carrying a signature and no text unless
+  // the request asks for summarized display, which spends reasoning tokens Pi
+  // cannot show. The request succeeds either way, so nothing else would notice a
+  // release that stopped honouring the option. Redacted thinking is the one
+  // legitimate empty block: its payload lives in the signature.
+  const empty = thinkingBlocks(message).filter((block) => block.redacted !== true && !block.thinking?.trim());
+  if (empty.length > 0) {
+    throw new Error(`${label}: ${empty.length} thinking block(s) arrived with no text; is --thinking-display still honoured?`);
+  }
   return message;
+}
+
+function thinkingBlocks(message) {
+  return (message?.content ?? []).filter((block) => block.type === "thinking");
+}
+
+/**
+ * Whether a reply carried visible thinking text at all. Adaptive thinking may
+ * skip a turn, so the check above cannot be unconditional; stages report this so
+ * a run that never exercised it is distinguishable from one that passed.
+ */
+export function thinkingTextSeen(message) {
+  return thinkingBlocks(message).some((block) => block.redacted !== true && Boolean(block.thinking?.trim()));
 }
 
 export function consumeJsonl(stream, onValue, onError) {
