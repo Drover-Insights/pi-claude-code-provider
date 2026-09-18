@@ -518,10 +518,10 @@ test("provider requests run Claude in the current Pi session's directory, never 
 });
 
 test("parallel sessions each run in their own directory and survive each other's shutdown", async () => {
-    // A Pi host can run several sessions in one process. A background subagent
-    // runner re-runs this factory per child while its siblings stay live, and
-    // Pi's own model runtime keeps only the last registered streamSimple, so
-    // every request has to resolve the session it actually belongs to.
+    // A Pi host can hold several sessions in one process, and re-runs this factory
+    // for each new, resumed, forked or cloned one. Pi's own model runtime keeps
+    // only the last registered streamSimple, so every request has to resolve the
+    // session it actually belongs to.
     const { directory, executable } = await createFakeClaude("ok", { reportCwd: true });
     const childA = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-child-a-"));
     const childB = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-child-b-"));
@@ -589,6 +589,124 @@ Current working directory: ${worktree}`), await realpath(worktree));
         if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
         else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
         await Promise.all([directory, childA, childB, worktree].map((path) => rm(path, { recursive: true, force: true })));
+    }
+});
+
+function providerModel(provider) {
+    const configured = provider.models.find((model) => model.id === "sonnet");
+    return {
+        ...configured,
+        provider: "pi-claude-code-provider",
+        api: "pi-claude-code-provider-headless",
+        baseUrl: "pi-claude-code-provider://local",
+    };
+}
+
+test("Pi binding one session twice is not an error", async () => {
+    // Pi's RPC runtime rebinds extensions for a new, resumed, forked or cloned
+    // session and its command handler then rebinds again, so session_start arrives
+    // twice with no shutdown between. Every step of the handler has to be
+    // idempotent: refusing the second bind reported an extension error to the
+    // client on every one of those transitions.
+    const { directory, executable } = await createFakeClaude("ok", { reportCwd: true });
+    const firstCwd = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-bind-a-"));
+    const secondCwd = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-bind-b-"));
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await piClaudeCodeProvider(pi.api);
+        const sessionStart = pi.handlers.get("session_start")[0];
+        const first = sessionContext(firstCwd, { notify() { } });
+        sessionStart({}, first);
+        // The same session bound again: the id and the directory repeat.
+        sessionStart({}, first);
+        assert.deepEqual([...sessionRegistry().keys()], [first.sessionManager.getSessionId()]);
+        // A replacement session on the same instance, also bound twice. The earlier
+        // id must not be left behind beside it.
+        const second = sessionContext(secondCwd, { notify() { } });
+        sessionStart({}, second);
+        sessionStart({}, second);
+        assert.deepEqual([...sessionRegistry().keys()], [second.sessionManager.getSessionId()]);
+        const provider = pi.providers.get("pi-claude-code-provider");
+        const result = await provider.streamSimple(
+            providerModel(provider),
+            { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] },
+            { reasoning: "medium", sessionId: second.sessionManager.getSessionId() },
+        ).result();
+        assert.equal(result.stopReason, "stop", result.errorMessage);
+        assert.equal(
+            await realpath(result.content.find((block) => block.type === "text")?.text),
+            await realpath(secondCwd),
+        );
+        await pi.handlers.get("session_shutdown")[0]({}, {});
+        assert.deepEqual([...sessionRegistry().keys()], []);
+    }
+    finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([directory, firstCwd, secondCwd].map((path) => rm(path, { recursive: true, force: true })));
+    }
+});
+
+test("session shutdown does not wait for a request Pi has not cancelled yet", async () => {
+    // Pi emits session_shutdown before it stops the turn, and awaits the handler
+    // with no timeout, so waiting for an image-store lease held Pi open until
+    // Claude finished answering. The session's image directory is left for
+    // stale-state recovery instead, which is what an abrupt exit leaves anyway.
+    const { directory, executable } = await createFakeClaude("ok", { searchDelayMs: 300 });
+    const sessionCwd = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-quit-"));
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    const imageDirectories = async () => (await readdir(tmpdir(), { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory() && entry.name.startsWith("pi-claude-code-provider-images-"))
+        .map((entry) => entry.name)
+        .sort();
+    const before = await imageDirectories();
+    let retained;
+    try {
+        const pi = fakePi();
+        await piClaudeCodeProvider(pi.api);
+        const ctx = sessionContext(sessionCwd, { notify() { } });
+        pi.handlers.get("session_start")[0]({}, ctx);
+        const provider = pi.providers.get("pi-claude-code-provider");
+        const context = {
+            messages: [{
+                role: "user",
+                content: [
+                    { type: "text", text: "describe this" },
+                    { type: "image", data: Buffer.from("provider image bytes").toString("base64"), mimeType: "image/png" },
+                ],
+                timestamp: 1,
+            }],
+            tools: [],
+        };
+        let settled = false;
+        const pending = provider
+            .streamSimple(providerModel(provider), context, { reasoning: "medium", sessionId: ctx.sessionManager.getSessionId() })
+            .result()
+            .then((result) => { settled = true; return result; });
+        // Wait for the image to be stored, so a lease is certainly held and there is
+        // a directory whose retention can be observed.
+        for (let attempt = 0; attempt < 300 && (await imageDirectories()).length === before.length; attempt += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        const opened = (await imageDirectories()).filter((name) => !before.includes(name));
+        assert.equal(opened.length, 1, "the request never opened the session image store");
+        retained = join(tmpdir(), opened[0]);
+        await pi.handlers.get("session_shutdown")[0]({}, {});
+        assert.equal(settled, false, "session shutdown waited for the in-flight request");
+        // Retained rather than removed, because the request can still write to it.
+        await access(retained);
+        const result = await pending;
+        assert.equal(result.stopReason, "stop", result.errorMessage);
+        await access(retained);
+    }
+    finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([directory, sessionCwd, ...(retained ? [retained] : [])]
+            .map((path) => rm(path, { recursive: true, force: true })));
     }
 });
 

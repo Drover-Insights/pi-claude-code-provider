@@ -102,7 +102,7 @@ The runner gives Pi a temporary agent directory and disables automatic extension
 | `npm run test:paid:matrix` | 15 |
 | `npm run test:paid:release` | 61 |
 
-Run paid stages one at a time. `model-matrix.js` checks for leaked private directories by diffing the whole temporary root, so another provider request running at the same time reads as a leak.
+Run paid stages one at a time. `model-matrix.js` checks for leaked private state by diffing the temporary root for leftover private *request* directories, so another provider request running at the same time reads as a leak. The session image directory is deliberately outside that diff, because it is session-scoped rather than per-request; `session-image-store.test.js` covers its removal.
 
 The tool steps need only the shell Pi's `bash` tool uses: on Windows, Git Bash at `%ProgramFiles%\Git\bin\bash.exe` or a `bash.exe` on `PATH`. They run shell scripts rather than an interpreter such as Python, so a gate result never depends on what else is installed, and `test:paid:full` checks for that shell before its first Claude launch.
 

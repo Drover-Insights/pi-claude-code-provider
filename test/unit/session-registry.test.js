@@ -73,8 +73,9 @@ test("a registered session whose prompt names another directory fails closed", (
 });
 
 test("an unknown session runs where its own prompt says, not in the session it inherited", () => {
-    // A Pi subagent child with its own directory or worktree reaches an inherited
-    // provider carrying its own session id, which this process never registered.
+    // A caller with its own directory or worktree -- an extension driving its own
+    // agent loop -- reaches an inherited provider under a session id of its own,
+    // which this process never registered.
     const registry = registryOf("/srv/parent");
     const resolved = resolveSession(registry, {
         sessionId: "child",
@@ -126,8 +127,9 @@ test("directories compare by separator, and on Windows by case", () => {
 });
 
 test("the registry is shared by every instance in the process", () => {
-    // Subagent children re-import this module, so a module-scoped map would let
-    // each child believe it is the only live session.
+    // Pi re-evaluates this module when it clears its extension cache, so a
+    // module-scoped map would let one evaluation's sessions be invisible to
+    // another's.
     assert.equal(sessionRegistry(), sessionRegistry());
     assert.equal(sessionRegistry(), globalThis[Symbol.for("pi-claude-code-provider.sessions.v1")]);
 });

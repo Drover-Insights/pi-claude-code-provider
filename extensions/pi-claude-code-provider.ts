@@ -45,10 +45,11 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
   const imageStore = new SessionImageStore();
   let searchRegistrationAttempted = false;
   let activeRateLimitNotify: ((notice: RateLimitNotice) => void) | undefined;
-  // Sessions are registered process-wide, not in this closure: Pi hosts can run
-  // several sessions in one process, and a subagent child re-runs this factory
-  // while its siblings stay live. A request must resolve its own session's
-  // directory, image store and notifier, never the last one to register.
+  // Sessions are registered process-wide, not in this closure: Pi re-runs this
+  // factory for every new, resumed, forked or cloned session, and a host can hold
+  // several live sessions that share these instances. A request must resolve its
+  // own session's directory, image store and notifier, never the last to register,
+  // because Pi's model runtime keeps only the newest provider.
   const sessions = sessionRegistry();
   let ownSessionId: string | undefined;
 
@@ -63,12 +64,13 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
     models: providerModels,
     streamSimple,
   });
-  // Pi's own registerProvider populates its model runtime only. An extension
-  // that drives its own agent loop, or calls completeSimple, resolves the model's
-  // api in Pi-AI's registry instead and threw "No API provider registered",
-  // which Pi's unawaited loop turns into an unhandled rejection that exits it.
-  // A side request is an ordinary stateless request here: the caller's prompt
-  // and tools pass through, and the caller, not Claude, runs any tool.
+  // Pi's own registerProvider populates its model runtime only. Pi-AI's
+  // completeSimple and stream resolve the model's api in Pi-AI's registry
+  // instead, and Pi's provider composer falls back to that registry too, so a
+  // miss threw "No API provider registered", which Pi's unawaited loop turns into
+  // an unhandled rejection that exits it. A side request is an ordinary stateless
+  // request here: the caller's prompt and tools pass through, and the caller, not
+  // Claude, runs any tool.
   //
   // Loaded rather than imported: Pi-AI declares this entrypoint temporary and
   // slated for deletion, and a static import would take the whole extension down
@@ -93,6 +95,12 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
     activeRateLimitNotify = createRateLimitNotifier((message) => ctx.ui.notify(message, "warning"));
     // Pi's session directory, not process.cwd(): a resumed session takes its cwd
     // from the session file, and Pi's tools resolve paths against that one.
+    //
+    // Every step of this handler is idempotent, because Pi's RPC mode binds
+    // extensions twice for one session: its runtime rebinds on a new, resumed,
+    // forked or cloned session and the command handler then rebinds again, so
+    // `session_start` arrives twice with no shutdown between. Dropping the earlier
+    // id is what keeps that second bind from orphaning the first one's entry.
     if (ownSessionId !== undefined) sessions.delete(ownSessionId);
     ownSessionId = ctx.sessionManager.getSessionId();
     sessions.set(ownSessionId, {

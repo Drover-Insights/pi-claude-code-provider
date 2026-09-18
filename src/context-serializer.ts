@@ -222,12 +222,12 @@ export async function prepareRequestWithLimits(
             const digest = createHash("sha256").update(validated.bytes).digest("hex");
             const name = `image-${digest}.${validated.extension}`;
             if (!writtenImages.has(name)) {
-              // Claude Code's quoted @-reference cannot contain a double quote.
               imageBytes += validated.bytes.length;
               if (imageBytes > limits.totalImageBytes) {
                 throw new ClaudeCodeError("image_total_size", `Aggregate image size exceeds ${limits.totalImageBytes} bytes`);
               }
               const path = imageStore ? await imageStore.put(name, validated.bytes) : join(directory, name);
+              // Claude Code's quoted @-reference cannot contain a double quote.
               if (path.includes('"')) throw new ClaudeCodeError("image_path", `Images cannot be attached from a temporary directory containing a double quote: ${path}; choose a temporary directory without one (TMPDIR, or TEMP on Windows)`);
               if (!imageStore) await writeFile(path, validated.bytes, { mode: 0o600, flag: "wx" });
               writtenImages.add(name);

@@ -21,9 +21,15 @@ export interface SessionRequest {
   hasTools: boolean;
 }
 
-// Process-global rather than module-scoped: a background subagent runner resets
-// the extension cache for each child, so every child re-imports this module and
-// re-runs the extension factory while the other children stay live.
+// Process-global rather than module-scoped, because a Pi host can hold more than
+// one live session and this module can be evaluated more than once. Pi replaces
+// the session and re-runs every extension factory on a new, resumed, forked or
+// cloned session, and clears its extension cache on reload or a change of working
+// directory, which re-evaluates this module. An SDK host that shares one resource
+// loader across sessions shares the extension instances with them. A map held in
+// module scope would therefore let one evaluation's sessions be invisible to
+// another's, and state held in a factory's closure would serve whichever session
+// registered last, because Pi's model runtime keeps only the newest provider.
 const REGISTRY_KEY = Symbol.for("pi-claude-code-provider.sessions.v1");
 
 export function sessionRegistry(): Map<string, SessionEntry> {
@@ -92,11 +98,12 @@ export function resolveSession(
   if (live.length === 0) return undefined;
   if (stated !== undefined) {
     // A session this instance never started, reached through a provider another
-    // session registered: a Pi subagent child with its own directory or
-    // worktree. Pi states where the request belongs, so run there rather than in
-    // the inherited session's tree, which the child's own tools never touch.
-    // The rest of the session state is borrowed, preferring a live session
-    // already in that directory; both are private temporary state.
+    // session registered: an extension driving its own agent loop under a session
+    // id of its own, or a host holding several sessions. Pi states where the
+    // request belongs, so run there rather than in the registered session's tree,
+    // which that caller's own tools never touch. The rest of the session state is
+    // borrowed, preferring a live session already in that directory; both are
+    // private temporary state.
     const host = live.findLast((entry) => sameDirectory(entry.cwd, stated)) ?? live[live.length - 1];
     return { ...host, cwd: stated, resolution: "prompt" };
   }

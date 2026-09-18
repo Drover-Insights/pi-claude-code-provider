@@ -193,7 +193,6 @@ export function createClaudeStream(
           errorCategory ??= "cleanup";
         }
         imageLease?.release(processLivenessUnknown);
-        if (processLivenessUnknown && prepared?.imageStoreDirectory) metrics.cleanupComplete = false;
         metrics.durationMs = Date.now() - startedAt;
         metrics.resolvedModel = output.responseModel;
         metrics.servedContextWindow = mapper?.contextWindow;

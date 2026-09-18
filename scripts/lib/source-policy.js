@@ -27,7 +27,7 @@ function filesystemFiles(path) {
   if (!statSync(path).isDirectory()) return [path];
   const files = [];
   for (const entry of readdirSync(path, { withFileTypes: true })) {
-    if (entry.isDirectory() && [".git", "node_modules", "coverage", "dist", ".pi", ".pi-subagents", ".ralph"].includes(entry.name)) continue;
+    if (entry.isDirectory() && [".git", "node_modules", "coverage", "dist", ".pi"].includes(entry.name)) continue;
     const child = join(path, entry.name);
     if (entry.isDirectory()) files.push(...filesystemFiles(child));
     else if (!entry.name.endsWith(".log") && !entry.name.endsWith(".tgz") && entry.name !== ".DS_Store") files.push(child);

@@ -17,13 +17,17 @@ export class SessionImageStore {
   private directoryPath: string | undefined;
   private writes = new Map<string, Promise<string>>();
   private active = 0;
-  private idle: (() => void)[] = [];
   private retain = false;
 
+  /**
+   * Idempotent on purpose. Pi's RPC mode binds extensions twice for one session
+   * -- its runtime rebinds on a new, resumed, forked or cloned session and the
+   * command handler then rebinds again -- so `session_start` arrives twice with
+   * no shutdown between. Refusing the second call only raised an extension error;
+   * reusing the open store is correct, because one instance serves one session at
+   * a time and the paths are content-addressed.
+   */
   open(): void {
-    if (this.openForSession || this.active !== 0 || this.directoryPromise) {
-      throw new Error("Image store session was opened before its previous session closed");
-    }
     this.openForSession = true;
   }
 
@@ -40,14 +44,19 @@ export class SessionImageStore {
         released = true;
         if (livenessUnknown) this.retain = true;
         this.active -= 1;
-        if (this.active === 0) this.idle.splice(0).forEach((resolve) => resolve());
       },
     };
   }
 
   async close(): Promise<void> {
     this.openForSession = false;
-    if (this.active > 0) await new Promise<void>((resolve) => this.idle.push(resolve));
+    // Pi emits session_shutdown before it aborts the turn, and awaits this handler
+    // with no timeout of its own, so a lease still outstanding belongs to a request
+    // that has not been told to stop yet: waiting for it holds Pi open for the rest
+    // of the turn. Leave the directory and its recorded paths intact instead -- the
+    // request keeps writing to the paths it was already given, and stale-directory
+    // recovery reclaims the directory once this Pi is gone.
+    if (this.active > 0) return;
     try {
       const directory = await this.directoryPromise;
       if (directory && !this.retain) await removeRuntimeDirectory(directory);
