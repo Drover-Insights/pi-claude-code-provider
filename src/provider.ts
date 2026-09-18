@@ -71,13 +71,27 @@ export function createClaudeStream(
     const resolved = session && "error" in session ? undefined : session;
     const imageStore = resolved?.imageStore;
     const onRateLimitNotice = resolved?.onRateLimitNotice;
+    // Leased with the session, not after preparation: a request that borrowed a
+    // store from another live session would otherwise fail across the awaits in
+    // between if that session shut down, even carrying no images at all. close()
+    // waits on outstanding leases, so the directory survives for whoever holds
+    // one. A request that goes on to fail briefly holds a lease it never used,
+    // which is correct: the store must stay open for anything still able to
+    // write to it. The failure is carried rather than thrown, because this
+    // prologue must return a stream, not raise.
+    let imageLease: ImageStoreLease | undefined;
+    let leaseFailure: unknown;
+    try {
+      imageLease = imageStore?.acquire();
+    } catch (error) {
+      leaseFailure = error;
+    }
     const output = createOutput(model);
 
     void (async () => {
       const startedAt = Date.now();
       const effort = options?.reasoning ?? "medium";
       let prepared: Awaited<ReturnType<typeof prepareRequest>> | undefined;
-      let imageLease: ImageStoreLease | undefined;
       let claude: ClaudeProcess | undefined;
       let cwd: string | undefined;
       let toolUse = false;
@@ -211,7 +225,7 @@ export function createClaudeStream(
         metrics.lastPhase = "payload_applied";
         cwd = await requireWorkingDirectory(session);
         metrics.sessionResolution = resolved?.resolution;
-        imageLease = imageStore?.acquire();
+        if (leaseFailure) throw leaseFailure;
         metrics.messageCount = effectiveContext.messages.length;
         metrics.toolCount = effectiveContext.tools?.length ?? 0;
         const systemPromptBytes = Buffer.byteLength(effectiveContext.systemPrompt ?? "");

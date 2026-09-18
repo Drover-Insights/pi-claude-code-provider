@@ -7,6 +7,7 @@ import { isContextOverflow, isRetryableAssistantError } from "@earendil-works/pi
 import { createClaudeStream as createProviderStream, isExpectedToolHandoffExit, waitForReadyOrExit } from "../../src/provider.ts";
 import { getLastRequestMetrics } from "../../src/metrics.ts";
 import { superviseProcess, terminateProcessGroup } from "../../src/process-utils.ts";
+import { SessionImageStore } from "../../src/session-image-store.ts";
 import { nodeFixtureSource } from "../support/node-fixture.js";
 import { CAPTURED_CLAUDE_VERSION, PROVIDER_INIT_FIELDS, initRecord, streamRecoveryRecords, toolUseEvents } from "../support/claude-fixture.js";
 const model = {
@@ -1319,6 +1320,36 @@ process.stdin.on("end", () => {
     finally {
         if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT;
         else process.env.PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT = original;
+        await rm(fake.dir, { recursive: true, force: true });
+    }
+});
+test("a request keeps the image store it was placed on when that session shuts down", async () => {
+    // A request whose session id this process never registered borrows another
+    // live session's image store. That session can end while the request is still
+    // preparing, and the lease used to be taken only afterwards, so the borrower
+    // failed on a store it might never write to. onPayload runs in exactly that
+    // window: after the session is resolved, before preparation.
+    const store = new SessionImageStore();
+    store.open();
+    const fake = await fakeClaude(`
+process.stdout.write(JSON.stringify(${JSON.stringify(init)}) + String.fromCharCode(10));
+process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"ok",usage:{}}) + String.fromCharCode(10));`);
+    let closing;
+    try {
+        const result = await createProviderStream(
+            { executable: fake.executable, version: "test", subscriptionType: "pro" },
+            { resolveSession: () => ({ cwd: tmpdir(), imageStore: store }) },
+        )(model, context, {
+            reasoning: "medium",
+            // Returning nothing leaves Pi's payload alone; the shutdown is the point.
+            onPayload: () => { closing = store.close(); },
+        }).result();
+        assert.equal(result.stopReason, "stop", result.errorMessage);
+        // close() is still waiting on this request's lease, which is what keeps
+        // the borrowed directory alive; it settles once the request released it.
+        await closing;
+    }
+    finally {
         await rm(fake.dir, { recursive: true, force: true });
     }
 });
