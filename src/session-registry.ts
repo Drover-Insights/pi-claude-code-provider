@@ -40,6 +40,16 @@ export function sessionRegistry(): Map<string, SessionEntry> {
  * names none. Best effort by construction: Pi renders it as a trailing
  * `Current working directory:` line up to 0.85.1 and as a `<cwd>` section after
  * that, and an extension that forces the system prompt suppresses it entirely.
+ *
+ * Both readings take Pi's *last* statement, and that is load-bearing rather than
+ * incidental. Pi renders project context -- the repository's own instruction
+ * files, which this provider does not author -- ahead of the directory in both
+ * renderings, so matching the last section and anchoring the 0.85.1 line to the
+ * end of the prompt is what keeps a repository from naming the directory Claude
+ * runs in. Preferring an earlier match would hand that choice to project files:
+ * directly for a request whose session is unknown, where this is the only source
+ * of truth, and as a refusal for one whose session is known, where a disagreeing
+ * prompt fails the request.
  */
 export function promptWorkingDirectory(systemPrompt: string | undefined): string | undefined {
   if (!systemPrompt) return undefined;
