@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { deflateSync } from "node:zlib";
-import { assistantReply, closeLiveRpcProcess, consumeJsonl, superviseLiveProcess, thinkingTextSeen } from "./lib/live-process.js";
+import { assistantReply, closeLiveRpcProcess, consumeJsonl, describeThinking, superviseLiveProcess, thinkingTextSeen } from "./lib/live-process.js";
 import { describePiLaunch, livePiLaunch, locatePiPackages, packageEntry } from "./lib/pi-installation.js";
 if (process.env.PI_CLAUDE_CODE_PROVIDER_PAID_TEST_CHILD !== "1") {
     throw new Error("Paid live tests must be started through an npm test:paid:* script");
@@ -118,8 +118,12 @@ async function runCacheProbe(cwd) {
         assert.ok(third.usage.cacheWrite < maxReuseWrite, `Turn 3 wrote ${third.usage.cacheWrite} cache tokens, not below ${MAX_REUSE_WRITE_FRACTION * 100}% of turn 1's ${first.usage.cacheWrite}; ${timeline}`);
         // Report what the empty-thinking check actually saw: a stage where no turn
         // thought is a stage that did not exercise it, which a green run hides.
-        const thinkingTurns = [first, second, third].filter(thinkingTextSeen).length;
-        console.log(`ok - RPC multi-turn cache reuse on ${CACHE_MODEL} (turn 2 ${secondHit.toFixed(1)}% hit; turn 3 ${thirdHit.toFixed(1)}% hit; ${timeline}; thinking text on ${thinkingTurns} of 3 turns)`);
+        // These turns ask for one exact word, so reasoning tokens say whether the
+        // model declined to think or thought without its text arriving.
+        const turns = [first, second, third];
+        const thinkingTurns = turns.filter(thinkingTextSeen).length;
+        const reasoning = turns.map((turn) => turn.usage?.reasoning ?? "unreported").join("/");
+        console.log(`ok - RPC multi-turn cache reuse on ${CACHE_MODEL} (turn 2 ${secondHit.toFixed(1)}% hit; turn 3 ${thirdHit.toFixed(1)}% hit; ${timeline}; thinking text on ${thinkingTurns} of 3 turns, reasoning tokens ${reasoning})`);
         completed = true;
     }
     finally {

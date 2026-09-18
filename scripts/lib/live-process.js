@@ -106,6 +106,20 @@ export function thinkingTextSeen(message) {
   return thinkingBlocks(message).some((block) => block.redacted !== true && Boolean(block.thinking?.trim()));
 }
 
+/**
+ * How a stage should report what it saw of a reply's thinking. Reasoning tokens
+ * separate the two reasons text can be absent: the model did not think at all,
+ * which a short instruction-following prompt invites, or it thought and the text
+ * did not arrive, which is the defect. Claude reports the count even when it
+ * returns no block, so "absent, 0 reasoning tokens" is a turn that never
+ * exercised the check, and "absent" against a non-zero count is a finding.
+ */
+export function describeThinking(message) {
+  const reasoning = message?.usage?.reasoning;
+  const tokens = reasoning === undefined ? "unreported" : `${reasoning}`;
+  return `thinking text ${thinkingTextSeen(message) ? "seen" : "absent"}, ${tokens} reasoning tokens`;
+}
+
 export function consumeJsonl(stream, onValue, onError) {
   const parser = new JsonlParser(onValue);
   let failed = false;

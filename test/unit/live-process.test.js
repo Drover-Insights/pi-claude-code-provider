@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import { assistantReply, closeLiveRpcProcess, consumeJsonl, superviseLiveProcess, thinkingTextSeen } from "../../scripts/lib/live-process.js";
+import { assistantReply, closeLiveRpcProcess, consumeJsonl, describeThinking, superviseLiveProcess, thinkingTextSeen } from "../../scripts/lib/live-process.js";
 
 test("a live assistant reply reports a provider error by name rather than as empty text", () => {
   const end = (message) => ({ type: "message_end", message });
@@ -35,6 +35,13 @@ test("a live assistant reply fails when thinking arrived without its text", () =
   assert.equal(thinkingTextSeen({ content: [{ type: "thinking", thinking: "reasoned" }, text] }), true);
   assert.equal(thinkingTextSeen({ content: [redacted, text] }), false);
   assert.equal(thinkingTextSeen({ content: [text] }), false);
+
+  // Reasoning tokens separate "did not think" from "thought without the text".
+  const thought = { type: "thinking", thinking: "reasoned" };
+  assert.equal(describeThinking({ content: [text], usage: { reasoning: 0 } }), "thinking text absent, 0 reasoning tokens");
+  assert.equal(describeThinking({ content: [text], usage: { reasoning: 412 } }), "thinking text absent, 412 reasoning tokens");
+  assert.equal(describeThinking({ content: [thought, text], usage: { reasoning: 412 } }), "thinking text seen, 412 reasoning tokens");
+  assert.equal(describeThinking({ content: [text], usage: {} }), "thinking text absent, unreported reasoning tokens");
 });
 
 test("live-process supervision clears normal exits and enforces deadlines", async () => {
