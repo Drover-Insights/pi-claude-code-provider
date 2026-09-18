@@ -368,7 +368,11 @@ try {
   };
 } finally {
   await imageStore.close();
-  await Promise.all([home, markerRoot, fixture?.project].filter(Boolean).map((path) => rm(path, { recursive: true, force: true })));
+  // Claude Code can still be writing under its temporary HOME as it exits, which
+  // surfaces as ENOTEMPTY here; the captures themselves are already complete.
+  await Promise.all([home, markerRoot, fixture?.project].filter(Boolean).map(
+    (path) => rm(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
+  ));
 }
 const healthy = report(captures, options, startup);
 if (options.output) {
