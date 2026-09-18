@@ -71,6 +71,7 @@ export function createClaudeStream(
       let claude: ClaudeProcess | undefined;
       let cwd: string | undefined;
       let toolUse = false;
+      let lengthStop = false;
       let terminationCause: ClaudeTerminationCause = "none";
       let mapper: ClaudeEventMapper | undefined;
       let exitCode: number | null | undefined;
@@ -139,6 +140,18 @@ export function createClaudeStream(
       const stopForToolUse = (): void => {
         if (toolUse || terminationCause === "caller_abort") return;
         toolUse = true;
+        terminationCause = "tool_handoff";
+        metrics.terminationExpected = true;
+        claude?.terminateInBackground();
+      };
+
+      // A response that reached the output limit is complete as far as Pi is concerned.
+      // Claude Code would answer it with a synthetic continuation turn and another
+      // message, so stop it here and publish the length stop. The termination path, and
+      // therefore the expected exit codes, are the tool handoff's.
+      const stopForLength = (): void => {
+        if (lengthStop || toolUse || terminationCause === "caller_abort") return;
+        lengthStop = true;
         terminationCause = "tool_handoff";
         metrics.terminationExpected = true;
         claude?.terminateInBackground();
@@ -237,6 +250,7 @@ export function createClaudeStream(
           expectedTools,
           toolNames: prepared.toolNames,
           onToolUse: stopForToolUse,
+          onLengthStop: stopForLength,
           onRateLimitNotice,
           onResponseAnnouncement: announceResponse,
           privatePaths: [prepared.directory, ...(prepared.imageStoreDirectory ? [prepared.imageStoreDirectory] : [])],
@@ -386,6 +400,20 @@ export function createClaudeStream(
           } else {
             await cleanupPrepared();
             if (mapper.completeToolUse()) metrics.lastPhase = "completed";
+          }
+        } else if (lengthStop) {
+          if (mapper.isTerminal) {
+            await cleanupPrepared();
+          } else if (!isExpectedToolHandoffExit(result)) {
+            errorCategory = "process_exit";
+            mapper.fail(
+              await failureAfterCleanup(
+                `Claude Code output limit handoff exited unexpectedly (code ${String(result.code)}, signal ${String(result.signal)})`,
+              ),
+            );
+          } else {
+            await cleanupPrepared();
+            if (mapper.completeLength()) metrics.lastPhase = "completed";
           }
         } else if (mapper.hasSuccessfulResult) {
           if (result.code !== 0 || result.signal !== null) {

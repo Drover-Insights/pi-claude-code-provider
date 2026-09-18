@@ -46,6 +46,8 @@ export interface ClaudeEventMapperOptions {
   expectedTools: Set<string>;
   toolNames: Map<string, string>;
   onToolUse: () => void;
+  /** Omitted only by tests: without it a max_tokens stop falls back to failing on Claude Code's continuation. */
+  onLengthStop?: () => void;
   onRateLimitNotice?: RateLimitNoticeSink;
   onResponseAnnouncement?: ResponseAnnouncementSink;
   privatePaths?: readonly string[];
@@ -70,6 +72,7 @@ export class ClaudeEventMapper {
   private messageStarted = false;
   private streamMessageId: string | undefined;
   private messageStopped = false;
+  private handoffLatched = false;
   private terminal = false;
   private resultReceived = false;
   private successfulResult: "stop" | "length" | undefined;
@@ -83,6 +86,7 @@ export class ClaudeEventMapper {
   private readonly expectedTools: Set<string>;
   private readonly toolNames: Map<string, string>;
   private readonly onToolUse: () => void;
+  private readonly onLengthStop: () => void;
   private readonly onRateLimitNotice: RateLimitNoticeSink;
   private readonly onResponseAnnouncement: ResponseAnnouncementSink;
   private assistantDiagnostic: string | undefined;
@@ -94,6 +98,7 @@ export class ClaudeEventMapper {
     this.expectedTools = options.expectedTools;
     this.toolNames = options.toolNames;
     this.onToolUse = options.onToolUse;
+    this.onLengthStop = options.onLengthStop ?? (() => {});
     this.onRateLimitNotice = options.onRateLimitNotice ?? (() => {});
     this.onResponseAnnouncement = options.onResponseAnnouncement ?? (() => {});
     this.privatePaths = options.privatePaths ?? [];
@@ -146,6 +151,11 @@ export class ClaudeEventMapper {
     }
     if (this.resultReceived) throw new ClaudeCodeError("protocol_order", "Claude emitted a record after its result");
     if (record.type === "stream_event") {
+      // Once a handoff is latched the provider is terminating Claude, but records
+      // already in the pipe still arrive. Claude Code answers a tool denial or an output
+      // limit with another message of its own, so these events belong to a turn Pi never
+      // asked for: they must neither be published nor rejected as protocol drift.
+      if (this.handoffLatched) return;
       if (!record.event || typeof record.event !== "object") {
         throw new ClaudeCodeError("protocol_shape", "Claude stream_event did not contain an event");
       }
@@ -214,7 +224,9 @@ export class ClaudeEventMapper {
     // nothing to let through. After a tool-use stop the provider is already terminating
     // Claude for handoff, and records about Claude's own next request must not
     // invalidate a complete proposal.
-    if (!this.messageStarted || this.stopReason === "tool_use") return;
+    // A max_tokens stop is followed by Claude Code's own continuation, which the length
+    // handoff owns.
+    if (!this.messageStarted || this.stopReason === "tool_use" || this.stopReason === "max_tokens") return;
     const raw = record as Record<string, unknown>;
     let cause: string | undefined;
     if (record.type === "system" && record.subtype === "api_retry") {
@@ -273,7 +285,8 @@ export class ClaudeEventMapper {
     else if (type === "message_stop") {
       if (this.blocks.size > 0) throw new ClaudeCodeError("protocol_blocks", "Claude stopped with unclosed content blocks");
       this.messageStopped = true;
-      if (this.stopReason === "tool_use") this.onToolUse();
+      if (this.stopReason === "tool_use") this.latchHandoff(this.onToolUse);
+      else if (this.stopReason === "max_tokens") this.latchHandoff(this.onLengthStop);
     } else throw new ClaudeCodeError("protocol_event", `Unsupported Claude stream event: ${String(type)}`);
   }
 
@@ -283,7 +296,14 @@ export class ClaudeEventMapper {
       this.stopReason = stopReason(delta.stop_reason);
     }
     this.applyUsage(event.usage);
-    if (this.stopReason === "tool_use") this.onToolUse();
+    if (this.stopReason === "tool_use") this.latchHandoff(this.onToolUse);
+    else if (this.stopReason === "max_tokens") this.latchHandoff(this.onLengthStop);
+  }
+
+  /** Stop mapping this response's stream and ask the provider to terminate Claude. */
+  private latchHandoff(notify: () => void): void {
+    this.handoffLatched = true;
+    notify();
   }
 
   private startBlock(event: Record<string, unknown>): void {
@@ -400,7 +420,7 @@ export class ClaudeEventMapper {
     this.applyUsage(record.usage);
     this.applyModelUsage(record.modelUsage);
     if (record.is_error) {
-      if (this.isExpectedToolTermination(record, terminationCause)) return;
+      if (this.isExpectedHandoffTermination(record, terminationCause)) return;
       const status = typeof record.api_error_status === "number" && Number.isFinite(record.api_error_status)
         ? ` (${record.api_error_status})`
         : "";
@@ -448,16 +468,33 @@ export class ClaudeEventMapper {
     return true;
   }
 
-  private isExpectedToolTermination(record: StreamEventEnvelope, terminationCause: ClaudeTerminationCause): boolean {
-    return terminationCause === "tool_handoff" &&
-      this.stopReason === "tool_use" &&
-      this.output.content.some((block) => block.type === "toolCall") &&
-      record.subtype === "error_during_execution" &&
-      record.is_error === true &&
-      record.api_error_status === undefined &&
+  /**
+   * Publish a response that reached the output limit, after the provider has terminated
+   * Claude. Claude Code answers a max_tokens stop with a synthetic "Output token limit
+   * hit" turn and another message, so the provider stops it at the stop reason and
+   * returns Pi the ordinary `length` stop the response earned.
+   */
+  completeLength(): boolean {
+    if (this.terminal) return false;
+    if (this.blocks.size > 0) throw new ClaudeCodeError("protocol_blocks", "Output limit stop completed with unclosed content blocks");
+    if (this.stopReason !== "max_tokens") throw new ClaudeCodeError("protocol_stop", "Claude did not report an output limit stop");
+    this.terminal = true;
+    this.output.stopReason = "length";
+    this.stream.push({ type: "done", reason: "length", message: this.output });
+    this.stream.end();
+    return true;
+  }
+
+  /** Whether an error result is only the provider's own handoff termination, for a tool call or an output limit. */
+  private isExpectedHandoffTermination(record: StreamEventEnvelope, terminationCause: ClaudeTerminationCause): boolean {
+    if (terminationCause !== "tool_handoff") return false;
+    if (record.subtype !== "error_during_execution" || record.is_error !== true) return false;
+    if (record.api_error_status !== undefined || record.result !== undefined) return false;
+    if (record.terminal_reason !== "aborted_streaming") return false;
+    if (this.stopReason === "max_tokens") return record.stop_reason === "max_tokens";
+    return this.stopReason === "tool_use" &&
       record.stop_reason === "tool_use" &&
-      record.terminal_reason === "aborted_streaming" &&
-      record.result === undefined;
+      this.output.content.some((block) => block.type === "toolCall");
   }
 
   private pushFallbackText(text: string): void {

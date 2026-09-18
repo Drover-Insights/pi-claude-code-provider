@@ -1481,3 +1481,33 @@ test("provider fails retryably and cleans up when Claude Code recovers mid-respo
         await rm(fake.dir, { recursive: true, force: true });
     }
 });
+test("provider returns a length stop when a response reaches the output limit", async () => {
+    // Claude Code answers the limit with its own continuation turn; the provider stops
+    // it at the stop reason and publishes the response the model actually produced.
+    // Claude Code acknowledges the provider's termination with this shape, as it does
+    // for a tool handoff.
+    const fake = await fakeClaude(capturedBody("max-tokens", {
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        stop_reason: "max_tokens",
+        terminal_reason: "aborted_streaming",
+        usage: { input_tokens: 4, output_tokens: 2 },
+    }));
+    try {
+        const stream = createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" })(model, context, { reasoning: "medium" });
+        const events = [];
+        for await (const event of stream)
+            events.push(event.type);
+        const result = await stream.result();
+        assert.equal(result.stopReason, "length", result.errorMessage);
+        assert.equal(events.at(-1), "done");
+        assert.equal(result.content.some((block) => block.type === "text" && block.text.length > 0), true);
+        const metrics = await waitForRequestMetrics((entry) => entry.lastPhase === "completed");
+        assert.equal(metrics.terminationExpected, true);
+        assert.equal(metrics.cleanupComplete, true);
+    }
+    finally {
+        await rm(fake.dir, { recursive: true, force: true });
+    }
+});

@@ -672,6 +672,7 @@ async function replayCapture(scenario) {
         expectedTools: new Set(tools),
         toolNames: new Map(tools.map((tool) => [tool, tool.replace("mcp__pi__", "")])),
         onToolUse: () => { handoff ??= "tool"; },
+        onLengthStop: () => { handoff ??= "length"; },
     });
     let rejected;
     for (const record of records) {
@@ -690,6 +691,8 @@ async function replayCapture(scenario) {
     if (!rejected) {
         if (handoff === "tool")
             mapper.completeToolUse();
+        else if (handoff === "length")
+            mapper.completeLength();
         else if (mapper.hasSuccessfulResult)
             mapper.completeResult();
         else if (!mapper.isTerminal)
@@ -735,10 +738,37 @@ test("keeps ordinary turns working across the same captures", async () => {
     assert.equal(handoff.message.stopReason, "toolUse");
     assert.equal(handoff.output.content.some((block) => block.type === "toolCall"), true);
 });
+test("returns a length stop when a response reaches the output limit", async () => {
+    const { message, events, output } = await replayCapture("max-tokens");
+    assert.equal(message.stopReason, "length");
+    assert.equal(events.at(-1)?.type, "done");
+    assert.equal(events.filter((event) => event.type === "start").length, 1);
+    // The text produced before the limit is kept, not discarded with the turn.
+    assert.equal(output.content.some((block) => block.type === "text" && block.text.length > 0), true);
+});
+test("accepts the output-limit handoff acknowledgement and fails closed on near misses", async () => {
+    const lengthTermination = (overrides = {}) => exactToolTerminationResult({ stop_reason: "max_tokens", ...overrides });
+    const accepted = readyToolMapper("max_tokens");
+    accepted.mapper.accept(lengthTermination(), "tool_handoff");
+    assert.equal(accepted.mapper.isTerminal, false);
+    assert.equal(accepted.mapper.completeLength(), true);
+    assert.equal((await accepted.stream.result()).stopReason, "length");
+    const nearMisses = [
+        { name: "wrong cause", cause: "none", record: lengthTermination() },
+        { name: "wrong result stop", cause: "tool_handoff", record: lengthTermination({ stop_reason: "end_turn" }) },
+        { name: "wrong terminal reason", cause: "tool_handoff", record: lengthTermination({ terminal_reason: "provider_error" }) },
+        { name: "non-null API status", cause: "tool_handoff", record: lengthTermination({ api_error_status: 500 }) },
+    ];
+    for (const entry of nearMisses) {
+        const { stream, mapper } = readyToolMapper("max_tokens");
+        mapper.accept(entry.record, entry.cause);
+        assert.equal((await stream.result()).stopReason, "error", entry.name);
+    }
+});
 test("replays every captured scenario through Pi's own frame encoder and reducer", async () => {
     // Pi's assistant events are append-only. Rewriting published content to reuse a
     // recovered stream, as the rejected external fix did, makes these throw.
-    for (const [scenario] of [...INTERRUPTED, ["http529"], ["post-stop"], ["tool-ok"]]) {
+    for (const [scenario] of [...INTERRUPTED, ["http529"], ["post-stop"], ["tool-ok"], ["max-tokens"]]) {
         const { events, liveFrames } = await replayCapture(scenario);
         assert.equal(liveFrames.length > 0, true, `${scenario} produced no frames`);
         assert.doesNotThrow(() => reduceAssistantMessageFrames(liveFrames), `${scenario} (live)`);
