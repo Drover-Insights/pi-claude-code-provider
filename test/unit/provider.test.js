@@ -3,12 +3,12 @@ import { access, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { isContextOverflow } from "@earendil-works/pi-ai";
+import { isContextOverflow, isRetryableAssistantError } from "@earendil-works/pi-ai";
 import { createClaudeStream as createProviderStream, isExpectedToolHandoffExit, waitForReadyOrExit } from "../../src/provider.ts";
 import { getLastRequestMetrics } from "../../src/metrics.ts";
 import { superviseProcess, terminateProcessGroup } from "../../src/process-utils.ts";
 import { nodeFixtureSource } from "../support/node-fixture.js";
-import { CAPTURED_CLAUDE_VERSION, PROVIDER_INIT_FIELDS, initRecord, toolUseEvents } from "../support/claude-fixture.js";
+import { CAPTURED_CLAUDE_VERSION, PROVIDER_INIT_FIELDS, initRecord, streamRecoveryRecords, toolUseEvents } from "../support/claude-fixture.js";
 const model = {
     id: "sonnet",
     name: "Sonnet",
@@ -1436,5 +1436,48 @@ test("provider rejects image attachments from a temporary directory containing a
         if (originalTmpdir === undefined) delete process.env.TMPDIR;
         else process.env.TMPDIR = originalTmpdir;
         await rm(root, { recursive: true, force: true });
+    }
+});
+
+/**
+ * A captured scenario's records, with this test's own init so the tool inventory matches.
+ * The fake writes everything at once and then waits, which is the worst case for a
+ * handoff: every record Claude Code would emit while being terminated has already
+ * arrived. It answers termination the way a real Claude process does.
+ */
+function capturedBody(scenario, terminalResult) {
+    const records = streamRecoveryRecords(scenario)
+        .filter((record) => !(record.type === "system" && record.subtype === "init"))
+        // The capture ran to completion because nothing terminated it. A terminated
+        // Claude never reaches its own result, so the acknowledgement below is the only
+        // terminal record, while every record it emitted beforehand still arrives.
+        .filter((record) => !(terminalResult && record.type === "result"))
+        .map((record) => JSON.stringify(record));
+    const onTerminate = terminalResult
+        ? `process.stdout.write(${JSON.stringify(JSON.stringify(terminalResult))} + "\\n", () => process.exit(143));`
+        : "process.exit(143);";
+    return `
+process.on("SIGTERM", () => { ${onTerminate} });
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify(${JSON.stringify(init)}) + "\\n");
+  for (const record of ${JSON.stringify(records)}) process.stdout.write(record + "\\n");
+  setInterval(() => {}, 1000);
+});`;
+}
+test("provider fails retryably and cleans up when Claude Code recovers mid-response", async () => {
+    // Claude Code keeps running after the interruption, working on a recovery whose
+    // output cannot be published. The provider must stop it rather than wait.
+    const fake = await fakeClaude(capturedBody("drop"));
+    try {
+        const result = await createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" })(model, context, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "error");
+        assert.match(result.errorMessage ?? "", /stream ended before message_stop \(Claude Code began retrying: unknown\)/);
+        assert.equal(isRetryableAssistantError(result), true);
+        const metrics = await waitForRequestMetrics((entry) => entry.errorCategory === "stream_interrupted");
+        assert.equal(metrics.cleanupComplete, true);
+    }
+    finally {
+        await rm(fake.dir, { recursive: true, force: true });
     }
 });

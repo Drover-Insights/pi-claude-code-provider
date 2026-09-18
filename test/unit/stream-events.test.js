@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import {
+    AssistantMessageFrameEncoder,
+    createAssistantMessageEventStream,
+    isRetryableAssistantError,
+    reduceAssistantMessageFrames,
+} from "@earendil-works/pi-ai";
 import { ClaudeEventMapper as EventMapper, argumentPreviewDue } from "../../src/stream-events.ts";
 import { createOutput } from "../../src/output.ts";
-import { PROVIDER_INIT_FIELDS, initRecord as claudeInitRecord } from "../support/claude-fixture.js";
+import { PROVIDER_INIT_FIELDS, initRecord as claudeInitRecord, streamRecoveryRecords } from "../support/claude-fixture.js";
 
 function makeMapper(stream, output, expectedTools, toolNames, onToolUse, onRateLimitNotice, onResponseAnnouncement) {
     return new EventMapper({ stream, output, expectedTools, toolNames, onToolUse, onRateLimitNotice, onResponseAnnouncement });
@@ -632,4 +637,143 @@ test("explains a cache-breakpoint limit rejection and names the escape hatch", a
     init(unrelated);
     unrelated.accept({ type: "result", is_error: true, api_error_status: 429, result: "subscription limit reached" });
     assert.equal(unrelated.cacheBreakpointLimit, false);
+});
+
+// --- Claude Code mid-response recovery (captured records) -------------------------
+
+/**
+ * Replay one captured scenario the way the provider does: map records until a handoff
+ * latches or a record is rejected, then publish the matching terminal event. Mirrors
+ * provider.ts phase 4 closely enough to show what a real request would return.
+ */
+async function replayCapture(scenario) {
+    const records = streamRecoveryRecords(scenario);
+    const tools = records.find((record) => record.type === "system" && record.subtype === "init").tools;
+    const stream = createAssistantMessageEventStream();
+    const output = createOutput(model);
+    const events = [];
+    // `partial` is a shared live accumulator, so encoding each event as it arrives and
+    // encoding the whole stream afterwards are genuinely different inputs to Pi's
+    // encoder. Both orders must produce frames its reducer accepts.
+    const liveEncoder = new AssistantMessageFrameEncoder();
+    const liveFrames = [];
+    const consume = (async () => {
+        for await (const event of stream) {
+            const frame = liveEncoder.encode(event);
+            if (frame)
+                liveFrames.push(frame);
+            events.push(event);
+        }
+    })();
+    let handoff;
+    const mapper = new EventMapper({
+        stream,
+        output,
+        expectedTools: new Set(tools),
+        toolNames: new Map(tools.map((tool) => [tool, tool.replace("mcp__pi__", "")])),
+        onToolUse: () => { handoff ??= "tool"; },
+    });
+    let rejected;
+    for (const record of records) {
+        // The provider terminates Claude at a handoff, so later records never arrive.
+        if (handoff)
+            break;
+        try {
+            mapper.accept(record);
+        }
+        catch (error) {
+            rejected = error;
+            mapper.fail(error.message);
+            break;
+        }
+    }
+    if (!rejected) {
+        if (handoff === "tool")
+            mapper.completeToolUse();
+        else if (mapper.hasSuccessfulResult)
+            mapper.completeResult();
+        else if (!mapper.isTerminal)
+            mapper.fail("Claude Code exited before a terminal event");
+    }
+    const message = await stream.result();
+    await consume;
+    return { message, output, events, liveFrames, rejected, mapper };
+}
+
+// Every recovery Claude Code performs after a response starts streaming. The first
+// signal differs per scenario; all of them must end the same way.
+const INTERRUPTED = [
+    ["drop", "api_retry after a dropped connection"],
+    ["live-cut-late", "api_retry on a real interrupted API stream"],
+    ["drop-tool", "a synthetic assistant error record"],
+    ["drop-text-stop", "a synthetic user continuation turn"],
+    ["sse-error", "a non-streaming replacement message"],
+];
+for (const [scenario, signal] of INTERRUPTED) {
+    test(`fails retryably when Claude Code recovers mid-response: ${signal}`, async () => {
+        const { message, events } = await replayCapture(scenario);
+        assert.equal(message.stopReason, "error");
+        assert.equal(message.errorMessage === undefined, false);
+        // Pi restarts the turn itself; a message it cannot classify loses the turn.
+        assert.equal(isRetryableAssistantError(message), true, message.errorMessage);
+        assert.equal(events.filter((event) => event.type === "done" || event.type === "error").length, 1);
+        // Nothing already streamed may be rewritten: no content index starts twice.
+        const started = events.filter((event) => /^(text|thinking|toolcall)_start$/.test(event.type)).map((event) => event.contentIndex);
+        assert.deepEqual(started, [...new Set(started)]);
+        assert.equal(events.filter((event) => event.type === "start").length, 1);
+    });
+}
+test("keeps ordinary turns working across the same captures", async () => {
+    // A retry before the response starts is not a mid-response recovery.
+    const before = await replayCapture("http529");
+    assert.equal(before.message.stopReason, "stop");
+    // A connection drop after the response completed changes nothing.
+    const after = await replayCapture("post-stop");
+    assert.equal(after.message.stopReason, "stop");
+    // permission_denied and the tool_result user record precede every tool handoff.
+    const handoff = await replayCapture("tool-ok");
+    assert.equal(handoff.message.stopReason, "toolUse");
+    assert.equal(handoff.output.content.some((block) => block.type === "toolCall"), true);
+});
+test("replays every captured scenario through Pi's own frame encoder and reducer", async () => {
+    // Pi's assistant events are append-only. Rewriting published content to reuse a
+    // recovered stream, as the rejected external fix did, makes these throw.
+    for (const [scenario] of [...INTERRUPTED, ["http529"], ["post-stop"], ["tool-ok"]]) {
+        const { events, liveFrames } = await replayCapture(scenario);
+        assert.equal(liveFrames.length > 0, true, `${scenario} produced no frames`);
+        assert.doesNotThrow(() => reduceAssistantMessageFrames(liveFrames), `${scenario} (live)`);
+        const queuedEncoder = new AssistantMessageFrameEncoder();
+        const queuedFrames = [];
+        assert.doesNotThrow(() => {
+            for (const event of events) {
+                const frame = queuedEncoder.encode(event);
+                if (frame)
+                    queuedFrames.push(frame);
+            }
+        }, `${scenario} (queued encode)`);
+        assert.doesNotThrow(() => reduceAssistantMessageFrames(queuedFrames), `${scenario} (queued)`);
+    }
+});
+test("classifies api_retry categories that repeating the turn cannot clear", async () => {
+    const stream = createAssistantMessageEventStream();
+    const mapper = makeMapper(stream, createOutput(model), new Set(), new Map(), () => { });
+    init(mapper);
+    mapper.accept({ type: "stream_event", event: { type: "message_start", message: { id: "msg_1", model: "claude-sonnet-5", usage: {} } } });
+    assert.throws(() => mapper.accept({ type: "system", subtype: "api_retry", error: "billing_error", error_status: 400 }), (error) => {
+        assert.equal(error.code, "stream_interrupted");
+        assert.match(error.message, /failed mid-response \(billing_error, HTTP 400\)/);
+        // "billing" is on Pi's non-retryable list, so the turn stops here.
+        assert.equal(isRetryableAssistantError({ stopReason: "error", errorMessage: error.message }), false);
+        return true;
+    });
+});
+test("ignores an api_retry that arrives before the response or after a tool stop", async () => {
+    const preStream = makeMapper(createAssistantMessageEventStream(), createOutput(model), new Set(), new Map(), () => { });
+    init(preStream);
+    preStream.accept({ type: "system", subtype: "api_retry", error: "overloaded", error_status: 529 });
+    const { mapper } = readyToolMapper();
+    // Claude Code's own next request can fail while the provider is terminating; that
+    // must not invalidate a complete proposal.
+    mapper.accept({ type: "system", subtype: "api_retry", error: "unknown", error_status: null });
+    assert.equal(mapper.completeToolUse(), true);
 });

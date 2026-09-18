@@ -68,6 +68,7 @@ export class ClaudeEventMapper {
   private responseStarted = false;
   private responseAnnouncement: Promise<void> | undefined;
   private messageStarted = false;
+  private streamMessageId: string | undefined;
   private messageStopped = false;
   private terminal = false;
   private resultReceived = false;
@@ -154,8 +155,10 @@ export class ClaudeEventMapper {
     } else if (record.type === "rate_limit_event") {
       this.acceptRateLimit(record.rate_limit_info);
     } else if (record.type === "assistant") {
+      this.rejectInterruptedStream(record);
       this.acceptAssistant(record);
     } else if (record.type === "user" || record.type === "system") {
+      this.rejectInterruptedStream(record);
       // Completed user echoes and non-init system status records are redundant
       // because include-partial-messages supplies the canonical stream events.
     } else {
@@ -195,6 +198,59 @@ export class ClaudeEventMapper {
     this.stream.push({ type: "start", partial: this.output });
   }
 
+  /**
+   * Claude Code recovers from an API failure that arrives after this response began
+   * streaming by replaying the request, by continuing from the partial it kept, or by
+   * re-requesting without streaming. Pi has already received the blocks streamed so far
+   * and its events are append-only, so none of those recoveries can be published here:
+   * rewriting content breaks Pi's contract, and content produced after the interruption
+   * follows internal prompts Pi never saw. The provider instead reports one failure
+   * whose wording Pi's own retry policy accepts, and Pi re-runs the turn from the
+   * unchanged context in a fresh process. The replayed transcript is a prompt-cache hit,
+   * so only the output tokens are produced twice.
+   */
+  private rejectInterruptedStream(record: StreamEventEnvelope): void {
+    // Before the response starts, a retry is an ordinary pre-stream retry that costs
+    // nothing to let through. After a tool-use stop the provider is already terminating
+    // Claude for handoff, and records about Claude's own next request must not
+    // invalidate a complete proposal.
+    if (!this.messageStarted || this.stopReason === "tool_use") return;
+    const raw = record as Record<string, unknown>;
+    let cause: string | undefined;
+    if (record.type === "system" && record.subtype === "api_retry") {
+      const category = typeof raw.error === "string" && raw.error.length > 0 ? raw.error : "unknown";
+      const status = typeof raw.error_status === "number" && Number.isFinite(raw.error_status) ? `, HTTP ${raw.error_status}` : "";
+      // A recorded rate-limit rejection already carries the reset time; it is both more
+      // useful than the category alone and retryable.
+      if (category === "rate_limit" && this.rejectedRateLimit) throw new ClaudeCodeError("stream_interrupted", this.rejectedRateLimit);
+      if (!RETRYABLE_INTERRUPTIONS.has(category)) {
+        throw new ClaudeCodeError("stream_interrupted", `Claude Code API request failed mid-response (${category}${status})`);
+      }
+      cause = `Claude Code began retrying: ${category}${status}`;
+    } else if (record.type === "assistant") {
+      if (typeof raw.error === "string" || raw.is_api_error_message === true) {
+        cause = "Claude Code reported a mid-response API error";
+      } else {
+        const message = raw.message && typeof raw.message === "object" && !Array.isArray(raw.message)
+          ? raw.message as Record<string, unknown>
+          : undefined;
+        // A different message id before this stream stops is Claude Code's non-streaming
+        // replacement. Mid-stream echoes of the open message carry its own id, and the
+        // completed echo of a finished message arrives only after message_stop.
+        if (!this.messageStopped && typeof message?.id === "string" && message.id !== this.streamMessageId) {
+          cause = "Claude Code replaced the stream with a non-streaming request";
+        }
+      }
+    } else if (record.type === "user" && raw.isSynthetic === true) {
+      // Claude Code's synthetic user turns ("Resume directly ...") each start another
+      // internal model turn. Tool results in a normal handoff are not synthetic.
+      cause = "Claude Code asked the model to continue a cut-off response";
+    }
+    // The fixed "stream ended before message_stop" phrasing is what Pi's retry
+    // classifier matches; the cause alone is not enough.
+    if (cause) throw new ClaudeCodeError("stream_interrupted", `Claude Code API stream ended before message_stop (${cause})`);
+  }
+
   private acceptStreamEvent(event: Record<string, unknown>): void {
     const type = event.type;
     if (type === "message_start") {
@@ -202,6 +258,7 @@ export class ClaudeEventMapper {
       const message = requireRecord(event.message, "message_start.message");
       if (typeof message.model === "string") this.output.responseModel = message.model;
       if (typeof message.id === "string") this.output.responseId = message.id;
+      this.streamMessageId = typeof message.id === "string" ? message.id : undefined;
       this.applyUsage(message.usage);
       this.messageStarted = true;
       return;
@@ -478,6 +535,11 @@ export class ClaudeEventMapper {
       this.output.usage.input + this.output.usage.output + this.output.usage.cacheRead + this.output.usage.cacheWrite;
   }
 }
+
+// api_retry categories that describe a transient transport or server failure. Every
+// other documented category (billing_error, authentication_failed, invalid_request, ...)
+// describes a condition that repeating the turn cannot clear.
+const RETRYABLE_INTERRUPTIONS = new Set(["overloaded", "server_error", "unknown"]);
 
 function stopReason(value: unknown): string {
   // Claude exposes this as a string rather than a closed enum. Pi only gives

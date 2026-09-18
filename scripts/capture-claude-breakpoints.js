@@ -41,6 +41,8 @@ import { SessionImageStore } from "../src/session-image-store.ts";
 // Anthropic permits four cache breakpoints per request. A fifth is rejected
 // outright, so this is a hard ceiling rather than a quality signal.
 const MAX_BREAKPOINTS = 4;
+// A shutting-down CLI that will not exit would otherwise hang the capture.
+const CHILD_EXIT_TIMEOUT_MS = 5000;
 // A CLI that neither sends a request nor exits would otherwise hang the capture.
 const CAPTURE_TIMEOUT_MS = 60_000;
 // Transcript-dominant padding, well past every model's minimum cacheable prefix,
@@ -153,6 +155,22 @@ async function snapshotTree(root) {
   return files;
 }
 
+/** Resolve once the child has exited, or after a bounded wait if it will not. */
+function closed(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      child.once("exit", done);
+    }, CHILD_EXIT_TIMEOUT_MS);
+    child.once("exit", done);
+  });
+}
+
 async function captureOnce(options, executable, home, project, imageStore) {
   const { server, body, listening, port } = captureServer();
   await listening;
@@ -207,6 +225,10 @@ async function captureOnce(options, executable, home, project, imageStore) {
       clearTimeout(timer);
       child.kill();
     });
+    // Claude Code writes its cache under HOME as it shuts down. Returning before it has
+    // exited lets that write land after the temporary HOME is removed, recreating it and
+    // leaving one directory behind per run.
+    await closed(child);
     // Claude Code sends its first request only after the MCP tool catalog loads.
     const bridgeReady = options.tools ? existsSync(prepared.readyPath) : undefined;
     return { body: redact(JSON.parse(captured)), prompt, directory, bridgeReady };
