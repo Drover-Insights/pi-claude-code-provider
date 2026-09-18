@@ -1322,6 +1322,37 @@ process.stdin.on("end", () => {
         await rm(fake.dir, { recursive: true, force: true });
     }
 });
+test("provider writes no cache entry for a one-shot Pi asks not to cache", async () => {
+    // Pi sets cacheRetention "none" on compaction, branch and turn-prefix
+    // summaries. Each prompt is unique, so the 1h entry is never read back.
+    const capture = `
+const path = require("node:path");
+const NL = String.fromCharCode(10);
+let input = "";
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  fs.writeFileSync(path.join(__dirname, "captured-stdin"), input);
+  process.stdout.write(JSON.stringify(${JSON.stringify(init)}) + NL);
+  process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"ok",usage:{}}) + NL);
+});`;
+    const marked = async (streamOptions) => {
+        const fake = await fakeClaude(capture);
+        try {
+            const result = await createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" })(model, context, streamOptions).result();
+            assert.equal(result.stopReason, "stop", result.errorMessage);
+            const prompt = JSON.parse(await readFile(join(fake.dir, "captured-stdin"), "utf8")).message.content;
+            assert.ok(prompt.length > 0);
+            return prompt.some((block) => "cache_control" in block);
+        }
+        finally {
+            await rm(fake.dir, { recursive: true, force: true });
+        }
+    };
+    assert.equal(await marked({ reasoning: "medium", cacheRetention: "none" }), false);
+    // Ordinary turns keep the breakpoint; only "none" opts out.
+    assert.equal(await marked({ reasoning: "medium" }), true);
+    assert.equal(await marked({ reasoning: "medium", cacheRetention: "short" }), true);
+});
 test("provider records a cache-breakpoint limit rejection as its own category", async () => {
     const rejection = { type: "result", is_error: true, api_error_status: 400, result: "API Error: 400 A maximum of 4 blocks with cache_control may be provided. Found 5." };
     const fake = await fakeClaude(`

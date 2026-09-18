@@ -241,7 +241,10 @@ export function createClaudeStream(
           totalTimeoutMs,
         );
         const { args, prompt } = providerArgs(prepared, model.id, effort, {
-          transcriptBreakpoint: transcriptBreakpointEnabled(),
+          // Pi asks for no cache write on its one-shot summaries, which are
+          // unique per compaction, so the 1h entry this breakpoint writes would
+          // never be read back and is charged at the doubled long-TTL rate.
+          transcriptBreakpoint: transcriptBreakpointEnabled() && options?.cacheRetention !== "none",
           thinkingDisplay: thinkingDisplay(),
         });
         const expectedTools = new Set(prepared.toolNames.keys());
