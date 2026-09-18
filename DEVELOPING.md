@@ -32,7 +32,7 @@ pi install /absolute/path/to/pi-claude-code-provider
 | Diagnostics and metrics | `src/diagnostics.ts`, `src/doctor.ts`, `src/metrics.ts`, `src/claude-models.ts` | `metrics-doctor.test.js`, `claude-models.test.js` |
 | Proposal-only MCP bridge | `bridge/mcp-proposal-server.js` | `mcp-bridge.test.js` |
 | Paid and live validation | `src/paid-launch-budget.ts`, `scripts/paid-test-runner.js`, `scripts/live-test.js`, `scripts/model-matrix.js`, `scripts/lib/paid-stages.js`, `scripts/lib/paid-confirmation.js`, `scripts/lib/live-process.js`, `scripts/lib/model-matrix-policy.js`, `scripts/lib/pi-installation.js` | `paid-stages.test.js`, `paid-confirmation.test.js`, `paid-runner-lifecycle.test.js`, `live-process.test.js`, `model-matrix-policy.test.js`, `pi-installation.test.js` |
-| Repository policy and capture tooling | `scripts/check.js`, `scripts/typecheck.js`, `scripts/release-check.js`, `scripts/lib/dependency-policy.js`, `scripts/lib/documentation-policy.js`, `scripts/lib/source-policy.js`, `scripts/capture-claude-surface.js`, `scripts/capture-claude-breakpoints.js` | `dependency-policy.test.js`, `documentation-policy.test.js`, `source-policy.test.js`, `claude-fixture.test.js`, `node-fixture.test.js` |
+| Repository policy and capture tooling | `scripts/check.js`, `scripts/typecheck.js`, `scripts/release-check.js`, `scripts/lib/dependency-policy.js`, `scripts/lib/documentation-policy.js`, `scripts/lib/source-policy.js`, `scripts/capture-claude-surface.js`, `scripts/capture-claude-breakpoints.js`, `scripts/capture-claude-stream-recovery.js` | `dependency-policy.test.js`, `documentation-policy.test.js`, `source-policy.test.js`, `claude-fixture.test.js`, `node-fixture.test.js` |
 
 The manifest entry `extensions/index.ts` only re-exports the implementation. Keep the entry an `index.ts`: Pi's startup extension list appends any other entry's filename to the package name.
 
@@ -65,6 +65,14 @@ A platform is live-verified only after `npm run test:paid:release` passes on it.
 `test/support/captured/claude-<version>-help.txt` is `claude --help` captured byte-for-byte from the version `CAPTURED_CLAUDE_VERSION` in `test/support/claude-fixture.js` names. `validateClaudeCapabilities` decides whether the provider registers at all, so it is tested against help the CLI really emits rather than a hand-written list, which can spell flags the real help never shows.
 
 Recapture with `npm run capture:claude-surface`, then point `CAPTURED_CLAUDE_VERSION` at the new file and review the diff. Re-pin deliberately, as part of moving the verified baseline — the diff on a CLI upgrade is the point of committing the artifact.
+
+### Captured stream-recovery records
+
+`test/support/captured/claude-<version>-stream-<scenario>.jsonl` is Claude Code's own stdout for each way it recovers from an API failure, captured from the version `CAPTURED_STREAM_RECOVERY_VERSION` in `test/support/claude-fixture.js` names. The provider's handling of these shapes is tested against them rather than against hand-written sequences, for the same reason the help surface is: a hand-written sequence encodes what we believe Claude Code emits, and the recovery paths are exactly where that belief was wrong.
+
+`npm run capture:claude-stream-recovery` regenerates them, using **no quota**. It runs the CLI against a loopback server that scripts each attempt's response, with a dummy token, a temporary `HOME`, and the provider's own `providerArgs` and `buildClaudeEnvironment`. Pass scenario names to capture a subset, `--claude` to select a build, and `--print` to inspect without writing. Each file is named for the version in its own init record, so a capture on a newer CLI lands beside the pinned set instead of overwriting it; read the diff, then re-pin `CAPTURED_STREAM_RECOVERY_VERSION` and delete the version the tests no longer load.
+
+`claude-<version>-stream-live-cut-late.jsonl` is the exception: it came from a real API stream interrupted by a local forwarding proxy, so it cost quota and this command cannot reproduce it. The nine scripted scenarios were re-captured on Claude Code 2.1.276 and produce the same record shapes as the pinned 2.1.274 set.
 
 ## Validation
 
@@ -107,6 +115,15 @@ The release suite covers text, tool, image, isolation, recovery, Unicode, histor
 Fable is selectable but excluded from the release gate, because its availability and billing vary by tier. On Pro it requires usage credits, and with credits turned off every Fable request fails with an assistant error. Run `npm run test:paid:fable` only on an account where that spend is available and separately authorized; the blocking Sonnet and Opus cases already exercise the shared transport.
 
 **Read the reported error before blaming the model.** When a turn ends in an assistant error, such as disabled usage credits, a rate limit, or a lost login, the live scripts fail with that error by name. Only a reply that arrived with the wrong text is evidence about model behavior.
+
+### Mid-response recovery
+
+Claude Code has three recoveries after a response starts streaming, and the provider must recognize all of them (see [DESIGN.md](DESIGN.md#process-and-storage-lifecycle)). When changing `ClaudeEventMapper`, preserve these:
+
+- **Never rewrite published content.** Pi's assistant events are append-only. `stream-events.test.js` replays every captured scenario through Pi's own `AssistantMessageFrameEncoder` and `reduceAssistantMessageFrames`, in both consumption orders; reusing a content index makes them throw.
+- **The error wording is load-bearing.** A transient interruption must carry the fixed `stream ended before message_stop` phrase that Pi's `isRetryableAssistantError` matches (`packages/ai/src/utils/retry.ts`), or the turn is lost instead of retried. A cause that repeating cannot clear must not match it; `billing` is on Pi's non-retryable list.
+- **Do not read a handoff as an interruption.** `system/permission_denied` and a tool_result `user` record precede `message_delta(stop_reason: tool_use)` in every normal tool turn, and mid-stream `assistant` echoes carry the open stream's own message id.
+- **Keep both handoffs latched.** After a tool-use or output-limit stop, stream events still in the pipe are ignored. Claude Code answers each with another message of its own, and the result must not depend on whether termination wins that race.
 
 ### Prompt caching
 

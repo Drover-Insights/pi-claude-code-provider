@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A turn interrupted mid-response is retried instead of lost. When Claude Code's API stream failed after the response had started, the request failed with `Claude emitted duplicate message_start` or `Claude result arrived with unclosed content blocks`, which Pi could not recognize as retryable. The provider now stops Claude and reports the interruption in wording Pi's `retry` settings act on, so Pi re-runs the turn from the same context; the replay is a prompt-cache hit, so only the reply is produced twice. A cause that repeating cannot clear, such as a billing error, is still reported without a retry.
+- A response that reaches the output limit now ends with a `length` stop and keeps its text. It previously failed the same way, because Claude Code answers the limit with a continuation turn of its own.
+- An API error that arrives with an unfinished content block reports the API error instead of `Claude result arrived with unclosed content blocks`, which hid it.
+- A connection dropped inside a tool call's streamed arguments is reported as the interruption it is, rather than as invalid tool arguments, so it is retried too.
+
 ## [0.3.0] - 2026-09-13
 
 ### Added
