@@ -1,6 +1,5 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getApiProvider, registerApiProvider, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, VERSION, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -70,9 +69,16 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
   // which Pi's unawaited loop turns into an unhandled rejection that exits it.
   // A side request is an ordinary stateless request here: the caller's prompt
   // and tools pass through, and the caller, not Claude, runs any tool.
+  //
+  // Loaded rather than imported: Pi-AI declares this entrypoint temporary and
+  // slated for deletion, and a static import would take the whole extension down
+  // with it, because resolution fails before this factory runs and even the
+  // unavailable notice never reports. Without it the user keeps the provider and
+  // loses only side requests from other extensions.
+  const compat = await import("@earendil-works/pi-ai/compat").catch(() => undefined);
   const serveApiRegistry = (): void => {
-    if (getApiProvider(API)) return;
-    registerApiProvider({ api: API, stream: streamSimple, streamSimple }, PROVIDER);
+    if (!compat || compat.getApiProvider(API)) return;
+    compat.registerApiProvider({ api: API, stream: streamSimple, streamSimple }, PROVIDER);
   };
   serveApiRegistry();
 
@@ -114,7 +120,7 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
     ownSessionId = undefined;
     // The registration is shared, so it outlives whichever instance made it and
     // is withdrawn only once no session is left to serve.
-    if (sessions.size === 0) unregisterApiProviders(PROVIDER);
+    if (sessions.size === 0) compat?.unregisterApiProviders(PROVIDER);
     try {
       await Promise.all([searchOutputs.close(), imageStore.close()]);
     } finally {

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { access, chmod, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, DefaultPackageManager, SettingsManager, formatSize } from "@earendil-works/pi-coding-agent";
 import initializePiClaudeCodeProvider from "../../extensions/index.ts";
 import implementation from "../../extensions/pi-claude-code-provider.ts";
@@ -637,6 +639,24 @@ test("serves Pi-AI API-registry calls, which an extension's own agent loop makes
         if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
         else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
         unregisterApiProviders("pi-claude-code-provider");
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("a Pi without Pi-AI's compat entrypoint still gets the provider", async () => {
+    // That entrypoint is temporary by its own declaration. A static import of it
+    // would fail resolution before the factory runs, so the extension would not
+    // load at all and even its unavailable notice would never report; losing it
+    // must cost only side requests from other extensions.
+    const { directory, executable } = await createFakeClaude();
+    try {
+        const { stdout } = await promisify(execFile)(
+            process.execPath,
+            [fileURLToPath(new URL("../support/extension-without-compat.js", import.meta.url))],
+            { env: { ...process.env, PI_CLAUDE_CODE_PROVIDER_PATH: executable } },
+        );
+        assert.equal(stdout.trim(), "ok");
+    } finally {
         await rm(directory, { recursive: true, force: true });
     }
 });
