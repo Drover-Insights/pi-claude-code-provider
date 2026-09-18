@@ -1,5 +1,6 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getApiProvider, registerApiProvider, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, VERSION, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -23,6 +24,7 @@ import type { RuntimeCleanupResult } from "../src/runtime-directories.ts";
 import type { ClaudeInstallation } from "../src/types.ts";
 
 const PROVIDER = "pi-claude-code-provider";
+const API = "pi-claude-code-provider-headless";
 const SEARCH_TOOL = "pi_claude_code_provider_web_search";
 const NOTICE_PREFIX = "[pi-claude-code-provider]";
 const MAX_TRACKED_RATE_LIMIT_NOTICES = 64;
@@ -51,20 +53,35 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
   const sessions = sessionRegistry();
   let ownSessionId: string | undefined;
 
+  const streamSimple = createClaudeStream(installation, {
+    resolveSession: (request) => resolveSession(sessions, request),
+  });
   pi.registerProvider(PROVIDER, {
     name: "Claude Code Subscription",
     baseUrl: "pi-claude-code-provider://local",
     apiKey: "pi-claude-code-provider-subscription",
-    api: "pi-claude-code-provider-headless",
+    api: API,
     models: providerModels,
-    streamSimple: createClaudeStream(installation, {
-      resolveSession: (request) => resolveSession(sessions, request),
-    }),
+    streamSimple,
   });
+  // Pi's own registerProvider populates its model runtime only. An extension
+  // that drives its own agent loop, or calls completeSimple, resolves the model's
+  // api in Pi-AI's registry instead and threw "No API provider registered",
+  // which Pi's unawaited loop turns into an unhandled rejection that exits it.
+  // A side request is an ordinary stateless request here: the caller's prompt
+  // and tools pass through, and the caller, not Claude, runs any tool.
+  const serveApiRegistry = (): void => {
+    if (getApiProvider(API)) return;
+    registerApiProvider({ api: API, stream: streamSimple, streamSimple }, PROVIDER);
+  };
+  serveApiRegistry();
 
   pi.on("session_start", (_event, ctx) => {
     searchOutputs.open();
     imageStore.open();
+    // Another session reloading clears Pi-AI's registry for every extension in
+    // the process, so ownership is re-asserted rather than claimed once.
+    serveApiRegistry();
     // The provider starts a process per tool round-trip; session scope prevents
     // Claude's repeated notice from surfacing throughout one Pi turn.
     activeRateLimitNotify = createRateLimitNotifier((message) => ctx.ui.notify(message, "warning"));
@@ -95,6 +112,9 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
     // Only this instance's own entry: another instance's sessions stay live.
     if (ownSessionId !== undefined) sessions.delete(ownSessionId);
     ownSessionId = undefined;
+    // The registration is shared, so it outlives whichever instance made it and
+    // is withdrawn only once no session is left to serve.
+    if (sessions.size === 0) unregisterApiProviders(PROVIDER);
     try {
       await Promise.all([searchOutputs.close(), imageStore.close()]);
     } finally {

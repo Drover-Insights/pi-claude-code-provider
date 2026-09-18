@@ -11,6 +11,7 @@ import { VERIFIED_VERSIONS, platformStatus } from "../../src/compatibility.ts";
 import { CAPTURED_CLAUDE_HELP_PATH, ELIGIBLE_CLAUDE_AUTH } from "../support/claude-fixture.js";
 import { nodeFixtureSource } from "../support/node-fixture.js";
 import { sessionRegistry } from "../../src/session-registry.ts";
+import { completeSimple, getApiProvider, resetApiProviders, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
 
 const piClaudeCodeProvider = (pi) => initializePiClaudeCodeProvider(pi);
 
@@ -42,6 +43,9 @@ function fakePi(initialTools = []) {
 // silently change how the next test's requests resolve.
 test.beforeEach(() => {
     assert.deepEqual([...sessionRegistry().keys()], []);
+    // The Pi-AI registry is process-wide too, and an instance that never starts a
+    // session keeps its registration, which is correct but not a clean slate.
+    unregisterApiProviders("pi-claude-code-provider");
 });
 
 let sessionCounter = 0;
@@ -583,6 +587,57 @@ Current working directory: ${worktree}`), await realpath(worktree));
         if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
         else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
         await Promise.all([directory, childA, childB, worktree].map((path) => rm(path, { recursive: true, force: true })));
+    }
+});
+
+test("serves Pi-AI API-registry calls, which an extension's own agent loop makes", async () => {
+    // pi.registerProvider populates Pi's model runtime only. completeSimple and
+    // agentLoop's default stream function resolve the model's api in Pi-AI's
+    // registry, where a miss throws into an unawaited loop and exits Pi.
+    const { directory, executable } = await createFakeClaude("side-request-ok");
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await piClaudeCodeProvider(pi.api);
+        assert.ok(getApiProvider("pi-claude-code-provider-headless"), "registered when the extension loads");
+        const provider = pi.providers.get("pi-claude-code-provider");
+        const configured = provider.models.find((model) => model.id === "sonnet");
+        const model = {
+            ...configured,
+            provider: "pi-claude-code-provider",
+            api: "pi-claude-code-provider-headless",
+            baseUrl: "pi-claude-code-provider://local",
+        };
+        // A second instance shares the registration rather than replacing it.
+        const other = fakePi();
+        await piClaudeCodeProvider(other.api);
+        pi.handlers.get("session_start")[0]({}, sessionContext(tmpdir(), { notify() { } }));
+
+        // A side request is an ordinary request: no session id of its own, no tools.
+        const answer = await completeSimple(model, { messages: [{ role: "user", content: "ping", timestamp: 1 }] }, { reasoning: "medium" });
+        assert.equal(answer.stopReason, "stop", answer.errorMessage);
+        assert.equal(answer.content.find((block) => block.type === "text")?.text, "side-request-ok");
+
+        // Another session's /reload clears the registry for every extension in
+        // the process, so the next session start re-asserts ownership.
+        resetApiProviders();
+        assert.equal(getApiProvider("pi-claude-code-provider-headless"), undefined);
+        other.handlers.get("session_start")[0]({}, sessionContext(tmpdir(), { notify() { } }));
+        assert.ok(getApiProvider("pi-claude-code-provider-headless"));
+
+        // The instance that registered leaving must not strip the registration
+        // the other one is still being served by.
+        await pi.handlers.get("session_shutdown")[0]({}, {});
+        assert.ok(getApiProvider("pi-claude-code-provider-headless"));
+        await other.handlers.get("session_shutdown")[0]({}, {});
+        assert.equal(getApiProvider("pi-claude-code-provider-headless"), undefined);
+    }
+    finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        unregisterApiProviders("pi-claude-code-provider");
+        await rm(directory, { recursive: true, force: true });
     }
 });
 
