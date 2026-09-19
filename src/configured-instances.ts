@@ -1,11 +1,47 @@
 import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 
+export interface ConfiguredProviderFailover {
+  readonly providerId: string;
+  readonly label: string;
+  readonly order: readonly string[];
+}
+
 export interface ConfiguredProviderInstance {
   readonly providerId: string;
   readonly label: string;
   readonly configRoot: string;
   readonly expectedIdentityFingerprint: string;
+}
+
+export function validateFailoverDescriptor(
+  failover: ConfiguredProviderFailover,
+  instances: readonly ConfiguredProviderInstance[],
+): ConfiguredProviderFailover {
+  if (!failover || typeof failover !== "object") {
+    throw new Error("Claude Code failover configuration must be an object descriptor");
+  }
+  if (!/^[a-z][a-z0-9-]{0,63}$/.test(failover.providerId)) {
+    throw new Error("Claude Code failover provider ID must be a lowercase opaque label");
+  }
+  if (!/^[a-z][a-z0-9-]{0,63}$/.test(failover.label)) {
+    throw new Error("Claude Code failover must use a lowercase opaque label");
+  }
+  const configuredIds = new Set(instances.map((instance) => instance.providerId));
+  if (configuredIds.has(failover.providerId)) {
+    throw new Error("Claude Code failover provider ID must not collide with a configured instance");
+  }
+  if (!Array.isArray(failover.order) || failover.order.length < 2 || failover.order.length > instances.length) {
+    throw new Error("Claude Code failover order must contain between 2 and the configured instance count");
+  }
+  const order = [...failover.order];
+  if (order.some((providerId) => typeof providerId !== "string" || !configuredIds.has(providerId))) {
+    throw new Error("Claude Code failover order must name configured provider instances");
+  }
+  if (new Set(order).size !== order.length) {
+    throw new Error("Claude Code failover order must not contain duplicate provider instances");
+  }
+  return Object.freeze({ providerId: failover.providerId, label: failover.label, order: Object.freeze(order) });
 }
 
 export function validateInstanceDescriptors(

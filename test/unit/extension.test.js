@@ -64,6 +64,11 @@ function fakePi(initialTools = []) {
 async function createFakeClaude(searchResult = "ok", {
     searchDelayMs = 0,
     rateLimitInfo,
+    configRootRateLimitInfo = {},
+    rejectedConfigRoots = [],
+    partialBeforeRateLimitRoots = [],
+    malformedAfterRateLimitRoots = [],
+    requestLogPath,
     reportCwd = false,
     configRootResults = {},
     configRootAuth = {},
@@ -95,9 +100,25 @@ else {
   setTimeout(() => {
     const providerMode = process.argv.includes("--system-prompt-file");
     process.stdout.write(JSON.stringify(providerMode ? ${JSON.stringify(providerInit)} : ${JSON.stringify(init)}) + "\\n");
-    for (const rateLimitInfo of ${JSON.stringify(rateLimitEvents)}) process.stdout.write(JSON.stringify({type:"rate_limit_event",rate_limit_info:rateLimitInfo}) + "\\n");
-    const configuredResult = ${JSON.stringify(configRootResults)}[process.env.CLAUDE_CONFIG_DIR] ?? ${JSON.stringify(searchResult)};
-    process.stdout.write(JSON.stringify({type:"result",is_error:false,result:${reportCwd ? "providerMode ? process.cwd() : " : ""}configuredResult}) + "\\n");
+    if (${JSON.stringify(requestLogPath)}) require("node:fs").appendFileSync(${JSON.stringify(requestLogPath)}, String(process.env.CLAUDE_CONFIG_DIR) + "\\n");
+    if (${JSON.stringify(partialBeforeRateLimitRoots)}.includes(process.env.CLAUDE_CONFIG_DIR)) {
+      process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_start",message:{id:"msg_partial",model:"claude-sonnet-5",usage:{}}}}) + "\\n");
+      process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_start",index:0,content_block:{type:"text",text:""}}}) + "\\n");
+      process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_delta",index:0,delta:{type:"text_delta",text:"partial"}}}) + "\\n");
+      process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_stop",index:0}}) + "\\n");
+    }
+    const configuredRateLimits = ${JSON.stringify(configRootRateLimitInfo)}[process.env.CLAUDE_CONFIG_DIR];
+    const emittedRateLimits = configuredRateLimits === undefined ? ${JSON.stringify(rateLimitEvents)} : configuredRateLimits;
+    for (const rateLimitInfo of emittedRateLimits) process.stdout.write(JSON.stringify({type:"rate_limit_event",rate_limit_info:rateLimitInfo}) + "\\n");
+    if (${JSON.stringify(malformedAfterRateLimitRoots)}.includes(process.env.CLAUDE_CONFIG_DIR)) {
+      process.stdout.write(JSON.stringify({type:"unsupported_after_rate_limit"}) + "\\n");
+      process.exitCode = 1;
+    }
+    else if (${JSON.stringify(rejectedConfigRoots)}.includes(process.env.CLAUDE_CONFIG_DIR)) process.exitCode = 1;
+    else {
+      const configuredResult = ${JSON.stringify(configRootResults)}[process.env.CLAUDE_CONFIG_DIR] ?? ${JSON.stringify(searchResult)};
+      process.stdout.write(JSON.stringify({type:"result",is_error:false,result:${reportCwd ? "providerMode ? process.cwd() : " : ""}configuredResult}) + "\\n");
+    }
   }, ${searchDelayMs});
 }
 `), { mode: 0o700 });
@@ -145,6 +166,37 @@ test("account-specific provider descriptors require distinct opaque IDs and labe
     } finally {
         if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
         else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("configured failover requires a distinct provider and an ordered set of known instances", async () => {
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    try {
+        const instances = configuredInstances(primaryRoot, secondaryRoot);
+        const invalidFailovers = [
+            { providerId: "claude-primary", label: "automatic", order: ["claude-primary", "claude-secondary"] },
+            { providerId: "claude-auto", label: "automatic", order: ["claude-primary", "claude-missing"] },
+            { providerId: "claude-auto", label: "automatic", order: ["claude-primary", "claude-primary"] },
+            { providerId: "claude-auto", label: "automatic", order: ["claude-primary"] },
+        ];
+        for (const failover of invalidFailovers) {
+            const pi = fakePi();
+            await assert.rejects(
+                createPiClaudeCodeProvider({ instances, failover })(pi.api),
+                /failover/i,
+            );
+            assert.equal(pi.providers.size, 0);
+            assert.equal(pi.commands.size, 0);
+            assert.equal(pi.handlers.size, 0);
+        }
+    } finally {
         await Promise.all([
             rm(primaryRoot, { recursive: true, force: true }),
             rm(secondaryRoot, { recursive: true, force: true }),
@@ -534,6 +586,42 @@ test("account-specific providers register distinct stable provider IDs", async (
     }
 });
 
+test("configured failover advertises the most conservative shared model limits", async () => {
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    const auth = configuredAuthByRoot(primaryRoot, secondaryRoot);
+    auth[primaryRoot] = { ...auth[primaryRoot], subscriptionType: "max" };
+    auth[secondaryRoot] = { ...auth[secondaryRoot], subscriptionType: "pro" };
+    const { directory, executable } = await createFakeClaude("ok", { configRootAuth: auth });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: configuredInstances(primaryRoot, secondaryRoot),
+            failover: {
+                providerId: "claude-auto",
+                label: "automatic",
+                order: ["claude-primary", "claude-secondary"],
+            },
+        })(pi.api);
+
+        const opus = pi.providers.get("claude-auto").models.find((model) => model.id === "opus");
+        assert.equal(opus.contextWindow, 200_000);
+        assert.equal(opus.maxTokens, 64_000);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
 test("each account-specific provider request uses only its bound Claude configuration root", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
         mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
@@ -566,6 +654,271 @@ test("each account-specific provider request uses only its bound Claude configur
             assert.equal(result.stopReason, "stop");
             assert.deepEqual(result.content, [{ type: "text", text: expectedText }]);
         }
+
+        await pi.handlers.get("session_shutdown")[0]({}, {});
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("configured failover retries an unseen rate-limit rejection and sticks to the standby account", async () => {
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    const requestLogPath = join(primaryRoot, "requests.log");
+    const rejected = { status: "rejected", rateLimitType: "five_hour", resetsAt: Date.now() - 1_000 };
+    const { directory, executable } = await createFakeClaude("unbound", {
+        configRootResults: {
+            [primaryRoot]: "primary-account",
+            [secondaryRoot]: "secondary-account",
+        },
+        configRootAuth: configuredAuthByRoot(primaryRoot, secondaryRoot),
+        configRootRateLimitInfo: {
+            [primaryRoot]: [{ status: "rejected", rateLimitType: "five_hour" }, rejected],
+        },
+        rejectedConfigRoots: [primaryRoot],
+        requestLogPath,
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: configuredInstances(primaryRoot, secondaryRoot),
+            failover: {
+                providerId: "claude-auto",
+                label: "automatic",
+                order: ["claude-primary", "claude-secondary"],
+            },
+        })(pi.api);
+        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify() { throw new Error("UI unavailable"); } } });
+        const provider = pi.providers.get("claude-auto");
+        assert.ok(provider);
+        const configured = provider.models.find((model) => model.id === "sonnet");
+        const model = { ...configured, provider: "claude-auto", api: provider.api, baseUrl: provider.baseUrl };
+        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+
+        let payloadCalls = 0;
+        let responseCalls = 0;
+        const first = await provider.streamSimple(model, context, {
+            reasoning: "medium",
+            onPayload() { payloadCalls += 1; },
+            onResponse() { responseCalls += 1; },
+        }).result();
+        assert.equal(first.stopReason, "stop");
+        assert.deepEqual(first.content, [{ type: "text", text: "secondary-account" }]);
+        assert.equal(payloadCalls, 1);
+        assert.equal(responseCalls, 1);
+        const second = await provider.streamSimple(model, context, { reasoning: "medium" }).result();
+        assert.equal(second.stopReason, "stop");
+        assert.deepEqual(second.content, [{ type: "text", text: "secondary-account" }]);
+        assert.deepEqual((await readFile(requestLogPath, "utf8")).trim().split("\n"), [
+            primaryRoot,
+            secondaryRoot,
+            secondaryRoot,
+        ]);
+
+        await pi.handlers.get("session_shutdown")[0]({}, {});
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("configured failover reports labeled exhaustion after trying each account once", async () => {
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    const requestLogPath = join(primaryRoot, "requests.log");
+    const rejected = { status: "rejected", rateLimitType: "five_hour" };
+    const { directory, executable } = await createFakeClaude("unbound", {
+        configRootAuth: configuredAuthByRoot(primaryRoot, secondaryRoot),
+        configRootRateLimitInfo: { [primaryRoot]: [rejected], [secondaryRoot]: [rejected] },
+        rejectedConfigRoots: [primaryRoot, secondaryRoot],
+        requestLogPath,
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: configuredInstances(primaryRoot, secondaryRoot),
+            failover: {
+                providerId: "claude-auto",
+                label: "automatic",
+                order: ["claude-primary", "claude-secondary"],
+            },
+        })(pi.api);
+        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify() {} } });
+        const provider = pi.providers.get("claude-auto");
+        const configured = provider.models.find((model) => model.id === "sonnet");
+        const model = { ...configured, provider: "claude-auto", api: provider.api, baseUrl: provider.baseUrl };
+        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+
+        const result = await provider.streamSimple(model, context, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "error");
+        assert.match(result.errorMessage, /primary.*secondary/i);
+        assert.equal(result.errorMessage.includes(primaryRoot), false);
+        assert.equal(result.errorMessage.includes(secondaryRoot), false);
+        assert.deepEqual((await readFile(requestLogPath, "utf8")).trim().split("\n"), [primaryRoot, secondaryRoot]);
+
+        await pi.handlers.get("session_shutdown")[0]({}, {});
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("configured failover never retries after assistant output becomes visible", async () => {
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    const requestLogPath = join(primaryRoot, "requests.log");
+    const rejected = { status: "rejected", rateLimitType: "five_hour", resetsAt: Date.now() + 60_000 };
+    const { directory, executable } = await createFakeClaude("unbound", {
+        configRootAuth: configuredAuthByRoot(primaryRoot, secondaryRoot),
+        configRootRateLimitInfo: { [primaryRoot]: [rejected] },
+        rejectedConfigRoots: [primaryRoot],
+        partialBeforeRateLimitRoots: [primaryRoot],
+        requestLogPath,
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: configuredInstances(primaryRoot, secondaryRoot),
+            failover: {
+                providerId: "claude-auto",
+                label: "automatic",
+                order: ["claude-primary", "claude-secondary"],
+            },
+        })(pi.api);
+        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify() {} } });
+        const provider = pi.providers.get("claude-auto");
+        const configured = provider.models.find((model) => model.id === "sonnet");
+        const model = { ...configured, provider: "claude-auto", api: provider.api, baseUrl: provider.baseUrl };
+        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+
+        const result = await provider.streamSimple(model, context, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "error");
+        assert.deepEqual(result.content, [{ type: "text", text: "partial" }]);
+        const next = await provider.streamSimple(model, context, { reasoning: "medium" }).result();
+        assert.equal(next.stopReason, "stop");
+        assert.deepEqual(next.content, [{ type: "text", text: "unbound" }]);
+        assert.deepEqual((await readFile(requestLogPath, "utf8")).trim().split("\n"), [primaryRoot, secondaryRoot]);
+
+        await pi.handlers.get("session_shutdown")[0]({}, {});
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("configured failover preserves a protocol failure that follows a rate-limit notice", async () => {
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    const requestLogPath = join(primaryRoot, "requests.log");
+    const rejected = { status: "rejected", rateLimitType: "five_hour" };
+    const { directory, executable } = await createFakeClaude("unbound", {
+        configRootAuth: configuredAuthByRoot(primaryRoot, secondaryRoot),
+        configRootRateLimitInfo: { [primaryRoot]: [rejected] },
+        malformedAfterRateLimitRoots: [primaryRoot],
+        requestLogPath,
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: configuredInstances(primaryRoot, secondaryRoot),
+            failover: {
+                providerId: "claude-auto",
+                label: "automatic",
+                order: ["claude-primary", "claude-secondary"],
+            },
+        })(pi.api);
+        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify() {} } });
+        const provider = pi.providers.get("claude-auto");
+        const configured = provider.models.find((model) => model.id === "sonnet");
+        const model = { ...configured, provider: "claude-auto", api: provider.api, baseUrl: provider.baseUrl };
+        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+
+        const result = await provider.streamSimple(model, context, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "error");
+        assert.match(result.errorMessage, /unsupported/i);
+        assert.deepEqual((await readFile(requestLogPath, "utf8")).trim().split("\n"), [primaryRoot]);
+
+        await pi.handlers.get("session_shutdown")[0]({}, {});
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("configured failover does not switch accounts for a non-rate-limit failure", async () => {
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    const requestLogPath = join(primaryRoot, "requests.log");
+    const { directory, executable } = await createFakeClaude("unbound", {
+        configRootAuth: configuredAuthByRoot(primaryRoot, secondaryRoot),
+        rejectedConfigRoots: [primaryRoot],
+        requestLogPath,
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: configuredInstances(primaryRoot, secondaryRoot),
+            failover: {
+                providerId: "claude-auto",
+                label: "automatic",
+                order: ["claude-primary", "claude-secondary"],
+            },
+        })(pi.api);
+        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify() {} } });
+        const provider = pi.providers.get("claude-auto");
+        const configured = provider.models.find((model) => model.id === "sonnet");
+        const model = { ...configured, provider: "claude-auto", api: provider.api, baseUrl: provider.baseUrl };
+        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+
+        const result = await provider.streamSimple(model, context, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "error");
+        assert.deepEqual((await readFile(requestLogPath, "utf8")).trim().split("\n"), [primaryRoot]);
 
         await pi.handlers.get("session_shutdown")[0]({}, {});
     } finally {

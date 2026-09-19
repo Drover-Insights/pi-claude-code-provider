@@ -24,7 +24,7 @@ pi install /absolute/path/to/pi-claude-code-provider
 
 | Change area | Owning modules | Focused validation |
 | --- | --- | --- |
-| Extension startup, configured account instances, session lifetime, and session working directory | `extensions/index.ts` (manifest entry), `extensions/pi-claude-code-provider.ts`, `src/configured-instances.ts` (descriptor and root validation) | `extension.test.js` |
+| Extension startup, configured account instances, ordered failover, session lifetime, and session working directory | `extensions/index.ts` (manifest entry), `extensions/pi-claude-code-provider.ts`, `src/configured-instances.ts` (descriptor and root validation), `src/failover.ts` | `extension.test.js` |
 | Authentication, identity fingerprinting, CLI, model catalog, and compatibility | `src/auth.ts`, `src/catalog.ts`, `src/claude-args.ts`, `src/compatibility.ts` | `auth.test.js`, `catalog.test.js`, `claude-args.test.js`, `compatibility.test.js` |
 | Transcript and provider lifecycle | `src/context-serializer.ts`, `src/provider.ts`, `src/stream-events.ts`, `src/claude-protocol.ts`, `src/jsonl.ts`, `src/output.ts`, `src/errors.ts`, `src/types.ts` | `context-serializer.test.js`, `provider.test.js`, `stream-events.test.js`, `claude-protocol.test.js`, `jsonl.test.js`, `errors.test.js` |
 | Runtime launch, process trees, and private state | `src/claude-process.ts`, `src/host-runtime.ts`, `src/process-utils.ts`, `src/runtime-directories.ts` | `process-utils.test.js`, `runtime-directories.test.js` |

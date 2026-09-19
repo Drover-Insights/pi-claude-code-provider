@@ -37,6 +37,8 @@ type ClaimLaunch = () => Promise<void>;
 export interface ClaudeStreamDependencies {
   cleanupDirectory?: CleanupDirectory;
   onRateLimitNotice?: RateLimitNoticeSink;
+  /** Internal signal that the published terminal error is solely a structured rate-limit rejection. */
+  onRateLimitRejection?: () => void;
   claimLaunch?: ClaimLaunch;
   supervise?: typeof superviseProcess;
   /**
@@ -400,13 +402,16 @@ export function createClaudeStream(
             if (mapper.completeResult()) metrics.lastPhase = "completed";
           }
         } else if (!mapper.isTerminal) {
-          errorCategory ??= mapper.rateLimitFailure ? "rate_limit" : "process_exit";
-          mapper.fail(
-            await failureAfterCleanup(
-              mapper.rateLimitFailure ??
-                `Claude Code exited before a terminal event (code ${String(result.code)}, signal ${String(result.signal)})${stderrDetail()}`,
-            ),
+          const rateLimitFailure = mapper.rateLimitFailure;
+          errorCategory ??= rateLimitFailure ? "rate_limit" : "process_exit";
+          const failure = await failureAfterCleanup(
+            rateLimitFailure ??
+              `Claude Code exited before a terminal event (code ${String(result.code)}, signal ${String(result.signal)})${stderrDetail()}`,
           );
+          if (rateLimitFailure !== undefined && failure === rateLimitFailure) {
+            dependencies.onRateLimitRejection?.();
+          }
+          mapper.fail(failure);
         }
       } catch (caught) {
         const error = vanishedWorkingDirectory(caught, cwd) ?? caught;

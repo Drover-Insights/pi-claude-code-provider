@@ -10,7 +10,9 @@ import { bridgeArgv } from "../src/claude-args.ts";
 import { readClaudeModelAliases } from "../src/claude-models.ts";
 import {
   validateConfigurationRoots,
+  validateFailoverDescriptor,
   validateInstanceDescriptors,
+  type ConfiguredProviderFailover,
   type ConfiguredProviderInstance,
 } from "../src/configured-instances.ts";
 import { MINIMUM_VERSIONS, VERIFIED_VERSIONS, platformStatus, startupPlatformWarning, versionStatus } from "../src/compatibility.ts";
@@ -18,6 +20,7 @@ import { writeDiagnosticReport } from "../src/diagnostics.ts";
 import { errorText, normalizeClaudeOverflow } from "../src/errors.ts";
 import { formatDoctorSummary, probeBridge } from "../src/doctor.ts";
 import { flushMetricsLog, getLastRequestMetrics, getLastSearchMetrics, getMetricsLogError } from "../src/metrics.ts";
+import { createClaudeFailoverStream } from "../src/failover.ts";
 import { createClaudeStream } from "../src/provider.ts";
 import { cleanupStaleRuntimeDirectories, createRuntimeDirectory } from "../src/runtime-directories.ts";
 import { SessionImageStore } from "../src/session-image-store.ts";
@@ -41,9 +44,14 @@ export default function piClaudeCodeProvider(pi: ExtensionAPI): Promise<void> {
 export async function initializePiClaudeCodeProvider(
   pi: ExtensionAPI,
   instances?: readonly ConfiguredProviderInstance[],
+  failover?: ConfiguredProviderFailover,
 ): Promise<void> {
+  if (instances === undefined && failover !== undefined) {
+    throw new Error("Claude Code failover requires configured provider instances");
+  }
   if (instances !== undefined) {
     const descriptors = validateInstanceDescriptors(instances);
+    failover = failover === undefined ? undefined : validateFailoverDescriptor(failover, descriptors);
     const rootResults = await validateConfigurationRoots(descriptors.map((instance) => instance.configRoot));
     const failures = rootResults.flatMap((result, index) => {
       if (result?.ok !== false) return [];
@@ -105,6 +113,7 @@ export async function initializePiClaudeCodeProvider(
   const firstProvider = providers[0];
   if (firstProvider === undefined) return;
   const providerIds = new Set(providers.map((provider) => provider.providerId));
+  if (failover) providerIds.add(failover.providerId);
   const currentPlatform = platformStatus();
   const searchOutputs = createSearchOutputOwner();
   const imageStore = new SessionImageStore();
@@ -123,6 +132,40 @@ export async function initializePiClaudeCodeProvider(
       models: providerModelsForSubscription(provider.installation.subscriptionType),
       streamSimple: createClaudeStream(provider.installation, {
         onRateLimitNotice: (notice) => activeRateLimitNotifiers?.get(provider.providerId)?.(notice),
+        workingDirectory: () => sessionCwd,
+        imageStore,
+      }),
+    });
+  }
+
+  if (failover) {
+    const providersById = new Map(providers.map((provider) => [provider.providerId, provider]));
+    const members = failover.order.map((providerId) => {
+      const provider = providersById.get(providerId);
+      if (!provider) throw new Error("Claude Code failover member validation did not complete");
+      return { providerId, label: provider.notificationLabel ?? providerId, installation: provider.installation };
+    });
+    const memberCatalogs = members.map((member) =>
+      providerModelsForSubscription(member.installation.subscriptionType));
+    const models = memberCatalogs[0]!
+      .filter((model) => memberCatalogs.every((catalog) => catalog.some((candidate) => candidate.id === model.id)))
+      .map((model) => {
+        const variants = memberCatalogs.map((catalog) => catalog.find((candidate) => candidate.id === model.id)!);
+        return {
+          ...model,
+          contextWindow: Math.min(...variants.map((candidate) => candidate.contextWindow)),
+          maxTokens: Math.min(...variants.map((candidate) => candidate.maxTokens)),
+        };
+      });
+    if (models.length === 0) throw new Error("Claude Code failover members have no models in common");
+    pi.registerProvider(failover.providerId, {
+      name: `Claude Code Subscription (${failover.label})`,
+      baseUrl: "pi-claude-code-provider://local",
+      apiKey: "pi-claude-code-provider-subscription",
+      api: "pi-claude-code-provider-headless",
+      models,
+      streamSimple: createClaudeFailoverStream(members, {
+        onRateLimitNotice: (providerId, notice) => activeRateLimitNotifiers?.get(providerId)?.(notice),
         workingDirectory: () => sessionCwd,
         imageStore,
       }),
