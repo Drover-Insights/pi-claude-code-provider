@@ -222,6 +222,15 @@ export function createClaudeStream(
         // Phase 1 — prepare Pi's logical payload and private transport state.
         const effectiveContext = await applyPayloadHook(model, context, options);
         metrics.lastPhase = "payload_applied";
+        // An unknown, tool-free request may borrow the newest live session for
+        // a one-shot summary. The payload hook can add tools after that choice;
+        // refuse them rather than proposing paths from another session's cwd.
+        if (resolved?.resolution === "oneshot" && (effectiveContext.tools?.length ?? 0) > 0) {
+          throw new ClaudeCodeError(
+            "working_directory",
+            "Pi's unregistered session gained tools after before_provider_request; its working directory is unknown while multiple sessions are live",
+          );
+        }
         cwd = await requireWorkingDirectory(session);
         metrics.sessionResolution = resolved?.resolution;
         if (leaseFailure) throw leaseFailure;

@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- An unknown session with several live sessions can no longer gain tools through `before_provider_request` after being routed as a tool-free summary; the request fails before Claude starts instead of using another session's working directory.
 - Session-backed image requests reject a quoted temporary path before creating or writing the image store; correcting the temporary root lets the same session attach images.
 - The doctor bridge probe requires a clean child exit and reports termination failures while retaining marked state when liveness is unknown.
 - Provider timeout settings above Node's maximum timer delay now fail before launch instead of silently becoming approximately 1 ms.

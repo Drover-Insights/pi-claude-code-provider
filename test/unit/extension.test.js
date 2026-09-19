@@ -577,6 +577,15 @@ Current working directory: ${worktree}`), await realpath(worktree));
         const guessed = await b.stream(b.model, { ...context(), tools: [{ name: "read", description: "read", parameters: { type: "object" } }] }, { reasoning: "medium", sessionId: "01a0-fresh-compaction" }).result();
         assert.equal(guessed.stopReason, "error");
         assert.match(guessed.errorMessage ?? "", /never started through this provider and 2 sessions are live/);
+        // The payload hook can add tools after the initial tool-free routing
+        // decision. That must not turn a borrowed summary cwd into a tool cwd.
+        const addedByHook = await b.stream(b.model, context(), {
+            reasoning: "medium",
+            sessionId: "01a0-fresh-compaction",
+            onPayload: (payload) => ({ ...payload, tools: [{ name: "read", description: "read", parameters: { type: "object" } }] }),
+        }).result();
+        assert.equal(addedByHook.stopReason, "error");
+        assert.match(addedByHook.errorMessage ?? "", /gained tools after before_provider_request/);
 
         // A surviving child keeps working, including its image store, after the
         // session that registered the provider last has gone.
