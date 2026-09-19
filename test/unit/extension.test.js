@@ -652,8 +652,8 @@ test("Pi binding one session twice is not an error", async () => {
 test("session shutdown does not wait for a request Pi has not cancelled yet", async () => {
     // Pi emits session_shutdown before it stops the turn, and awaits the handler
     // with no timeout, so waiting for an image-store lease held Pi open until
-    // Claude finished answering. The session's image directory is left for
-    // stale-state recovery instead, which is what an abrupt exit leaves anyway.
+    // Claude finished answering. Shutdown leaves the directory to the request still
+    // writing to it, and that request reclaims it when it finishes.
     const { directory, executable } = await createFakeClaude("ok", { searchDelayMs: 300 });
     const sessionCwd = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-quit-"));
     const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
@@ -700,7 +700,14 @@ test("session shutdown does not wait for a request Pi has not cancelled yet", as
         await access(retained);
         const result = await pending;
         assert.equal(result.stopReason, "stop", result.errorMessage);
-        await access(retained);
+        // The request that held the lease reclaims the directory once it finishes.
+        // Nothing else can: session_shutdown has already run, and on Windows there
+        // is no stale-state pass to fall back on. release() does not await the
+        // removal, so poll for it.
+        for (let attempt = 0; attempt < 300 && (await imageDirectories()).includes(opened[0]); attempt += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        await assert.rejects(access(retained), "the session image directory was never reclaimed");
     }
     finally {
         if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;

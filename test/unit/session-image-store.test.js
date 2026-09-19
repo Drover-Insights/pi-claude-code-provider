@@ -1,10 +1,24 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { access, lstat, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import test from "node:test";
 import { SessionImageStore } from "../../src/session-image-store.ts";
 
 const imageName = (bytes) => `image-${createHash("sha256").update(bytes).digest("hex")}.png`;
+
+/** release() fires the deferred reclaim without awaiting it, so poll for the removal. */
+const waitForRemoval = async (directory) => {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    try {
+      await access(directory);
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`the image directory was never reclaimed: ${directory}`);
+};
 
 test("stable images survive concurrent requests and outlive a shutdown that must not wait", async () => {
   const store = new SessionImageStore();
@@ -35,9 +49,12 @@ test("stable images survive concurrent requests and outlive a shutdown that must
     await access(directory);
     assert.equal(first.directory, directory);
     assert.equal(await first.put(imageName(bytes), bytes), one);
-    // Once the stragglers are gone the directory is reclaimable in process too.
+    // Releasing the last lease finishes the close that deferred to it. Nothing else
+    // can: Pi emits session_shutdown once, so a second close() never arrives.
     first.release();
     second.release();
+    await waitForRemoval(directory);
+    // A repeated shutdown is then a no-op rather than a second removal of one tree.
     await store.close();
     await assert.rejects(access(directory));
     store.open();
@@ -72,5 +89,40 @@ test("rejects an image-store collision and retains uncertain-live state for stal
     lease.release();
     await store.close();
     if (directory) await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a deferred reclaim honors an uncertain-live release and still resets the store", async () => {
+  // The production ordering: session_shutdown defers to an in-flight request, and
+  // that request then reports a Claude child whose death it could not establish.
+  // The directory has to survive for the stale-state pass, and the store still has
+  // to forget it, or the next session inherits both the directory and the retention.
+  const store = new SessionImageStore();
+  store.open();
+  const bytes = Buffer.from("uncertain liveness");
+  const lease = store.acquire();
+  let retained;
+  let resumedDirectory;
+  try {
+    retained = await lease.put(imageName(bytes), bytes);
+    await store.close();
+    lease.release(true);
+    // Nothing reclaims it, because the Claude child may still be reading it.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await access(retained);
+    // The store forgot it all the same, so the next session opens its own directory.
+    store.open();
+    const resumed = store.acquire();
+    const resumedPath = await resumed.put(imageName(bytes), bytes);
+    resumedDirectory = resumed.directory;
+    assert.notEqual(resumedPath, retained);
+    resumed.release();
+    await store.close();
+    await assert.rejects(access(resumedPath));
+    // The retained directory is still the earlier session's, left for stale cleanup.
+    await access(retained);
+  } finally {
+    if (retained) await rm(dirname(retained), { recursive: true, force: true });
+    if (resumedDirectory) await rm(resumedDirectory, { recursive: true, force: true });
   }
 });

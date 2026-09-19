@@ -44,6 +44,11 @@ export class SessionImageStore {
         released = true;
         if (livenessUnknown) this.retain = true;
         this.active -= 1;
+        // Finish a close() that deferred to this lease. Nothing else will:
+        // session_shutdown arrives once, so without this the directory outlives the
+        // process, and on Windows no stale-state pass ever reclaims it. A store the
+        // next session has already reopened is left alone; that directory is in use.
+        if (!this.openForSession && this.active === 0) void this.reclaim().catch(() => undefined);
       },
     };
   }
@@ -54,18 +59,28 @@ export class SessionImageStore {
     // with no timeout of its own, so a lease still outstanding belongs to a request
     // that has not been told to stop yet: waiting for it holds Pi open for the rest
     // of the turn. Leave the directory and its recorded paths intact instead -- the
-    // request keeps writing to the paths it was already given, and stale-directory
-    // recovery reclaims the directory once this Pi is gone.
+    // request keeps writing to the paths it was already given, and the last lease to
+    // be released reclaims the directory from release().
     if (this.active > 0) return;
-    try {
-      const directory = await this.directoryPromise;
-      if (directory && !this.retain) await removeRuntimeDirectory(directory);
-    } finally {
-      this.directoryPromise = undefined;
-      this.directoryPath = undefined;
-      this.writes.clear();
-      this.retain = false;
-    }
+    await this.reclaim();
+  }
+
+  /**
+   * Remove the session's image directory, unless a lease reported a Claude child
+   * whose death could not be established. Ownership is given up before the removal
+   * is awaited, so a second call -- a repeated session_shutdown, or a close() racing
+   * the last release() -- is a no-op rather than a concurrent removal of one tree.
+   */
+  private async reclaim(): Promise<void> {
+    const pending = this.directoryPromise;
+    const retained = this.retain;
+    this.directoryPromise = undefined;
+    this.directoryPath = undefined;
+    this.writes.clear();
+    this.retain = false;
+    if (!pending) return;
+    const directory = await pending;
+    if (directory && !retained) await removeRuntimeDirectory(directory);
   }
 
   private async put(name: string, bytes: Buffer): Promise<string> {
