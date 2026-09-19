@@ -32,6 +32,9 @@ test("reads the working directory Pi states, in either rendering", () => {
         promptWorkingDirectory(`Current working directory: /srv/attacker\n\n${PI_0_85("/srv/a/project")}`),
         "/srv/a/project",
     );
+    // A direct caller may append Pi's 0.85.1 line after its own guidance, which
+    // could contain an earlier <cwd> section. The actual last declaration wins.
+    assert.equal(promptWorkingDirectory(`${PI_SECTIONS("/srv/attacker")}\n${PI_0_85("/srv/a/project")}`), "/srv/a/project");
     // Position is the second line of defense, not the only one: a section nested
     // in project context is discarded even when it follows Pi's own, which is
     // what stops a repository naming the directory if Pi ever reorders these.
@@ -101,10 +104,35 @@ test("an unknown session with multiple live sessions ignores repository-authored
     assert.equal(resolved.resolution, "prompt");
 });
 
-test("an unknown session falls back to the only live one", () => {
-    const resolved = resolveSession(registryOf("/srv/a"), { sessionId: "unknown", hasTools: true });
-    assert.equal(resolved.cwd, "/srv/a");
-    assert.equal(resolved.resolution, "single");
+test("a markerless tool-bearing side request fails with one live session unless borrowing is explicit", () => {
+    const registry = registryOf("/srv/parent");
+    for (const sessionId of [undefined, "unknown"]) {
+        const request = { sessionId, hasTools: true };
+        assert.match(resolveSession(registry, request).error, /refusing to borrow the sole live session/);
+        const borrowed = resolveSession(registry, { ...request, allowBorrowSoleDirectory: true });
+        assert.equal(borrowed.cwd, "/srv/parent");
+        assert.equal(borrowed.resolution, "single");
+    }
+    assert.match(
+        resolveSession(registryOf("/srv/a", "/srv/b"), { hasTools: true, allowBorrowSoleDirectory: true }).error,
+        /2 sessions are live/,
+    );
+});
+
+test("pi-subagents' direct watchdog header does not identify its child's cwd", () => {
+    const watchdog = [
+        "You are the main-session subagent watchdog for Pi.",
+        "Working directory: /srv/child",
+        "Review only the supplied parent turn delta. Inspect repository files only when needed to verify a concrete concern.",
+    ].join("\n");
+    assert.equal(promptWorkingDirectory(watchdog), undefined);
+    for (const sessionId of [undefined, "unregistered-child"]) {
+        const request = { sessionId, systemPrompt: watchdog, hasTools: true };
+        assert.match(resolveSession(registryOf("/srv/parent"), request).error, /no registered session or recognized working directory/);
+    }
+    // An upstream caller can use Pi 0.85.1's existing prompt convention.
+    const compatible = `${watchdog}\nCurrent working directory: /srv/child`;
+    assert.equal(resolveSession(registryOf("/srv/parent"), { systemPrompt: compatible, hasTools: true }).cwd, "/srv/child");
 });
 
 test("Pi's tool-free one-shots are hosted rather than refused", () => {
@@ -117,7 +145,10 @@ test("Pi's tool-free one-shots are hosted rather than refused", () => {
     assert.equal(oneshot.resolution, "oneshot");
     // The same request carrying tools is still refused: a proposal could be misdirected.
     const withTools = resolveSession(registry, { sessionId: "01a0-fresh", hasTools: true });
-    assert.match(withTools.error, /was never started through this provider and 2 sessions are live/);
+    assert.match(withTools.error, /no registered session or recognized working directory.*2 sessions are live/);
+    const sole = resolveSession(registryOf("/srv/a"), { hasTools: false });
+    assert.equal(sole.resolution, "oneshot");
+    assert.equal(sole.cwd, "/srv/a");
 });
 
 test("no live session resolves to nothing, which the provider reports as Pi's own failure", () => {

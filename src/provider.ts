@@ -39,13 +39,10 @@ export interface ClaudeStreamDependencies {
   claimLaunch?: ClaimLaunch;
   supervise?: typeof superviseProcess;
   /**
-   * The Pi session this request belongs to, and the only source of per-session
-   * state. Claude runs in that session's working directory, so the directory
-   * Claude Code reports to the model is the one Pi's tools resolve against, and
-   * its image store and notifier belong to the same session rather than to
-   * whichever one registered the provider last. There is deliberately no
-   * fallback beside it: one would be a way to run a request that belongs to no
-   * resolved session, which is the defect this replaced.
+   * Resolve the request's cwd and borrow private state from a live session.
+   * Registered IDs and Pi's prompt declaration can identify the cwd. A sole
+   * live session may be borrowed for tool-bearing requests only by explicit
+   * compatibility opt-in; that does not establish the caller's actual cwd.
    */
   resolveSession?: (request: SessionRequest) => ResolvedSession | { error: string } | undefined;
 }
@@ -59,11 +56,15 @@ export function createClaudeStream(
   const supervise = dependencies.supervise ?? superviseProcess;
   return (model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream => {
     const stream = createAssistantMessageEventStream();
+    // Pi 0.85.1 passes prompt and tools at the top level. The later transcript
+    // contract moves them into system messages; until we replay those deltas,
+    // routing from the empty top-level fields would lose cwd and tool evidence.
+    const unsupportedTranscript = context.messages.some((message) => (message as { role: string }).role === "system");
     // Resolved once, when Pi starts the request: a session starting or ending
     // during asynchronous preparation must not move this request to another
     // directory. The pre-hook prompt is used deliberately, because the session a
     // request belongs to is not a payload hook's to change.
-    const session = dependencies.resolveSession?.({
+    const session = unsupportedTranscript ? undefined : dependencies.resolveSession?.({
       sessionId: options?.sessionId,
       systemPrompt: context.systemPrompt,
       hasTools: (context.tools?.length ?? 0) > 0,
@@ -114,6 +115,7 @@ export function createClaudeStream(
         effort,
         messageCount: context.messages.length,
         toolCount: context.tools?.length ?? 0,
+        sessionResolution: resolved?.resolution,
         imageCount: 0,
         transcriptBytes: 0,
         catalogBytes: 0,
@@ -219,20 +221,25 @@ export function createClaudeStream(
       };
 
       try {
+        if (unsupportedTranscript) {
+          throw new ClaudeCodeError(
+            "content_shape",
+            "This Pi provider context uses transcript system messages; this release supports Pi 0.85.1's top-level prompt and tools only",
+          );
+        }
         // Phase 1 — prepare Pi's logical payload and private transport state.
         const effectiveContext = await applyPayloadHook(model, context, options);
         metrics.lastPhase = "payload_applied";
-        // An unknown, tool-free request may borrow the newest live session for
-        // a one-shot summary. The payload hook can add tools after that choice;
-        // refuse them rather than proposing paths from another session's cwd.
+        // A markerless tool-free request may borrow the newest live session for
+        // a summary. The hook cannot turn that borrowed route into a tool-bearing
+        // request, even if the process has only one registered session.
         if (resolved?.resolution === "oneshot" && (effectiveContext.tools?.length ?? 0) > 0) {
           throw new ClaudeCodeError(
             "working_directory",
-            "Pi's unregistered session gained tools after before_provider_request; its working directory is unknown while multiple sessions are live",
+            "Pi's tool-free request gained tools after before_provider_request; its working directory was only borrowed for a tool-free summary",
           );
         }
         cwd = await requireWorkingDirectory(session);
-        metrics.sessionResolution = resolved?.resolution;
         if (leaseFailure) throw leaseFailure;
         metrics.messageCount = effectiveContext.messages.length;
         metrics.toolCount = effectiveContext.tools?.length ?? 0;

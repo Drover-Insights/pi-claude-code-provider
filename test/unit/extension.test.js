@@ -59,24 +59,37 @@ function sessionContext(cwd, ui) {
     return { cwd, ui, sessionManager: { getSessionId: () => sessionId } };
 }
 
-async function createFakeClaude(searchResult = "ok", { searchDelayMs = 0, rateLimitInfo, reportCwd = false } = {}) {
+async function createFakeClaude(searchResult = "ok", { searchDelayMs = 0, rateLimitInfo, reportCwd = false, providerTools = [], holdProviderUntilInput = false } = {}) {
     const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-extension-"));
     const executable = join(directory, process.platform === "win32" ? "claude.cjs" : "claude");
     const rateLimitEvents = Array.isArray(rateLimitInfo) ? rateLimitInfo : rateLimitInfo ? [rateLimitInfo] : [];
     const init = { type: "system", subtype: "init", tools: ["WebFetch", "WebSearch"], mcp_servers: [], model: "claude-sonnet-5", permissionMode: "dontAsk", slash_commands: [], skills: [], plugins: [], apiKeySource: "none" };
-    const providerInit = { ...init, tools: [] };
+    const providerInit = {
+        ...init,
+        tools: providerTools.map((name) => `mcp__pi__${name}`),
+        mcp_servers: providerTools.length ? [{ name: "pi", status: "connected" }] : [],
+    };
     // Keep fake Claude JSONL visible in sandboxes that lose buffered Node child stdout.
     await writeFile(executable, nodeFixtureSource(`
 if (process.argv.includes("--version")) process.stdout.write(${JSON.stringify(`${VERIFIED_VERSIONS.claudeCode}\n`)});
 else if (process.argv[2] === "auth" && process.argv[3] === "status") process.stdout.write(JSON.stringify(${JSON.stringify(ELIGIBLE_CLAUDE_AUTH)}));
 else if (process.argv.includes("--help")) process.stdout.write(require("node:fs").readFileSync(${JSON.stringify(CAPTURED_CLAUDE_HELP_PATH)}, "utf8"));
 else {
-  setTimeout(() => {
-    const providerMode = process.argv.includes("--system-prompt-file");
+  const mcpIndex = process.argv.indexOf("--mcp-config");
+  if (mcpIndex >= 0) {
+    const ready = JSON.parse(process.argv[mcpIndex + 1]).mcpServers?.pi?.env?.PI_CLAUDE_TOOL_READY;
+    if (ready) require("node:fs").writeFileSync(ready, "ready\\n", { flag: "wx" });
+  }
+  const providerMode = process.argv.includes("--system-prompt-file");
+  const send = () => {
     process.stdout.write(JSON.stringify(providerMode ? ${JSON.stringify(providerInit)} : ${JSON.stringify(init)}) + "\\n");
     for (const rateLimitInfo of ${JSON.stringify(rateLimitEvents)}) process.stdout.write(JSON.stringify({type:"rate_limit_event",rate_limit_info:rateLimitInfo}) + "\\n");
     process.stdout.write(JSON.stringify({type:"result",is_error:false,result:${reportCwd ? "providerMode ? process.cwd() : " : ""}${JSON.stringify(searchResult)}}) + "\\n");
-  }, ${searchDelayMs});
+  };
+  if (providerMode && ${holdProviderUntilInput}) {
+    process.stdin.resume();
+    process.stdin.on("end", send);
+  } else setTimeout(send, ${searchDelayMs});
 }
 `), { mode: 0o700 });
     await chmod(executable, 0o700);
@@ -112,6 +125,49 @@ test("platform acknowledgement hides only the startup advisory and leaves doctor
         if (originalAcknowledgement === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM;
         else process.env.PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM = originalAcknowledgement;
         await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("sole-directory compatibility flag is required for a markerless tool-bearing side Agent", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "provider-extension-parent-"));
+    const child = await mkdtemp(join(tmpdir(), "provider-extension-child-"));
+    const { directory, executable } = await createFakeClaude("ok", { reportCwd: true, providerTools: ["read"], holdProviderUntilInput: true });
+    const oldPath = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    const oldBorrow = process.env.PI_CLAUDE_CODE_PROVIDER_BORROW_SOLE_DIRECTORY;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    delete process.env.PI_CLAUDE_CODE_PROVIDER_BORROW_SOLE_DIRECTORY;
+    let shutdown;
+    try {
+        const pi = fakePi();
+        await piClaudeCodeProvider(pi.api);
+        shutdown = pi.handlers.get("session_shutdown")[0];
+        const provider = pi.providers.get("pi-claude-code-provider");
+        const model = {
+            ...provider.models.find((candidate) => candidate.id === "sonnet"),
+            provider: "pi-claude-code-provider",
+            api: "pi-claude-code-provider-headless",
+            baseUrl: "pi-claude-code-provider://local",
+        };
+        pi.handlers.get("session_start")[0]({}, sessionContext(parent, { notify() { } }));
+        const sideContext = {
+            systemPrompt: `You are a side Agent.\nWorking directory: ${child}\nReview this request.`,
+            messages: [{ role: "user", content: "hello", timestamp: 1 }],
+            tools: [{ name: "read", description: "read", parameters: { type: "object", properties: {} } }],
+        };
+        const strict = await provider.streamSimple(model, sideContext).result();
+        assert.equal(strict.stopReason, "error");
+        assert.match(strict.errorMessage ?? "", /refusing to borrow the sole live session/);
+        process.env.PI_CLAUDE_CODE_PROVIDER_BORROW_SOLE_DIRECTORY = "on";
+        const borrowed = await provider.streamSimple(model, sideContext).result();
+        assert.equal(borrowed.stopReason, "stop", borrowed.errorMessage);
+        assert.equal(await realpath(borrowed.content.find((block) => block.type === "text")?.text), await realpath(parent));
+    } finally {
+        if (shutdown) await shutdown({}, {});
+        if (oldPath === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = oldPath;
+        if (oldBorrow === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_BORROW_SOLE_DIRECTORY;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_BORROW_SOLE_DIRECTORY = oldBorrow;
+        await Promise.all([parent, child, directory].map((path) => rm(path, { recursive: true, force: true })));
     }
 });
 
@@ -206,7 +262,7 @@ test("does not report a disabled overage as a rate limit", async () => {
         assert.equal((await provider.streamSimple(model, context, { reasoning: "medium" }).result()).stopReason, "stop");
         assert.deepEqual(notices.filter(({ message }) => message.includes("rate limit")), []);
         // A session left open would stay registered for the whole test file, and
-        // the provider resolves an unknown request to the only live session.
+        // this tool-free request would borrow its directory as a summary.
         await pi.handlers.get("session_shutdown")[0]({}, {});
     }
     finally {
@@ -576,7 +632,7 @@ Current working directory: ${worktree}`), await realpath(worktree));
         // The same unknown id with tools is refused rather than guessed.
         const guessed = await b.stream(b.model, { ...context(), tools: [{ name: "read", description: "read", parameters: { type: "object" } }] }, { reasoning: "medium", sessionId: "01a0-fresh-compaction" }).result();
         assert.equal(guessed.stopReason, "error");
-        assert.match(guessed.errorMessage ?? "", /never started through this provider and 2 sessions are live/);
+        assert.match(guessed.errorMessage ?? "", /no registered session or recognized working directory.*2 sessions are live/);
         // The payload hook can add tools after the initial tool-free routing
         // decision. That must not turn a borrowed summary cwd into a tool cwd.
         const addedByHook = await b.stream(b.model, context(), {

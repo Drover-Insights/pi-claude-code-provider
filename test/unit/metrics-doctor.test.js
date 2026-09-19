@@ -162,10 +162,24 @@ test("doctor summary handles absent, successful, and failed request diagnostics"
     assert.doesNotMatch(failed, /prompt|secret|pi-claude-code-provider-/i);
 });
 
+test("doctor identifies each working-directory source without logging the path", () => {
+    const sources = {
+        registered: "registered Pi session",
+        prompt: "Pi prompt declaration",
+        single: "sole-session compatibility borrow",
+        oneshot: "tool-free newest-session borrow",
+    };
+    for (const [resolution, description] of Object.entries(sources)) {
+        const summary = formatDoctorSummary({ ...doctorBase(), metrics: { ...metrics, sessionResolution: resolution } });
+        assert.match(summary, new RegExp(`^Working directory source: ${description}$`, "m"));
+    }
+    assert.match(formatDoctorSummary({ ...doctorBase(), metrics }), /^Working directory source: unresolved$/m);
+});
+
 test("doctor summary puts one labeled fact on each line", () => {
     const lines = formatDoctorSummary({ ...doctorBase(), metrics, metricsLogError: "EACCES" }).split("\n");
     assert.equal(lines[0], "Platform linux/x64 (verified); Pi 1 (verified); Claude Code 2 (unverified; tested 1)");
-    assert.deepEqual(lines.slice(1).map((line) => line.slice(0, line.indexOf(":"))), ["Runtime", "Claude", "Models", "Last request", "Metrics log error"]);
+    assert.deepEqual(lines.slice(1).map((line) => line.slice(0, line.indexOf(":"))), ["Runtime", "Claude", "Models", "Last request", "Working directory source", "Metrics log error"]);
     assert.equal(lines[2], "Claude: /usr/bin/claude (pro subscription)");
 });
 

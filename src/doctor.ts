@@ -179,6 +179,13 @@ export function formatDoctorSummary(input: DoctorSummaryInput): string {
     ? `Last request: ${metrics.requestedModel}/${metrics.effort}, ${metrics.messageCount} messages, ${metrics.estimatedInputTokens} estimated transport tokens, ${reportedUsage}, ${metrics.durationMs ?? 0}ms, ${metrics.stopReason ?? "unknown"}${metrics.errorCategory ? ` (${metrics.errorCategory})` : ""}${metrics.cleanupComplete ? "" : ", cleanup incomplete"}`
     : "Last request: no request metrics recorded yet");
   if (metrics) {
+    const sources: Record<string, string> = {
+      registered: "registered Pi session",
+      prompt: "Pi prompt declaration",
+      single: "sole-session compatibility borrow",
+      oneshot: "tool-free newest-session borrow",
+    };
+    lines.push(`Working directory source: ${sources[metrics.sessionResolution ?? ""] ?? "unresolved"}`);
     const contextWindow = servedContextWindowNote(input, metrics);
     if (contextWindow) lines.push(contextWindow);
     const promptCache = promptCacheNote(metrics);

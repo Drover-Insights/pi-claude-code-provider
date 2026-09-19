@@ -54,7 +54,10 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
   let ownSessionId: string | undefined;
 
   const streamSimple = createClaudeStream(installation, {
-    resolveSession: (request) => resolveSession(sessions, request),
+    resolveSession: (request) => resolveSession(sessions, {
+      ...request,
+      allowBorrowSoleDirectory: process.env.PI_CLAUDE_CODE_PROVIDER_BORROW_SOLE_DIRECTORY?.trim() === "on",
+    }),
   });
   pi.registerProvider(PROVIDER, {
     name: "Claude Code Subscription",
@@ -68,9 +71,9 @@ export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<vo
   // completeSimple and stream resolve the model's api in Pi-AI's registry
   // instead, and Pi's provider composer falls back to that registry too, so a
   // miss threw "No API provider registered", which Pi's unawaited loop turns into
-  // an unhandled rejection that exits it. A side request is an ordinary stateless
-  // request here: the caller's prompt and tools pass through, and the caller, not
-  // Claude, runs any tool.
+  // an unhandled rejection that exits it. Side requests pass their own prompt and
+  // tools, but a tool-bearing direct Agent must also identify its cwd; its own
+  // tools run outside Claude and may use another directory.
   //
   // Loaded rather than imported: Pi-AI declares this entrypoint temporary and
   // slated for deletion, and a static import would take the whole extension down

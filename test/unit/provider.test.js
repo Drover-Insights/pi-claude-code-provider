@@ -8,6 +8,7 @@ import { createClaudeStream as createProviderStream, isExpectedToolHandoffExit, 
 import { getLastRequestMetrics } from "../../src/metrics.ts";
 import { superviseProcess, terminateProcessGroup } from "../../src/process-utils.ts";
 import { SessionImageStore } from "../../src/session-image-store.ts";
+import { resolveSession } from "../../src/session-registry.ts";
 import { nodeFixtureSource } from "../support/node-fixture.js";
 import { CAPTURED_CLAUDE_VERSION, PROVIDER_INIT_FIELDS, initRecord, streamRecoveryRecords, toolUseEvents } from "../support/claude-fixture.js";
 const model = {
@@ -400,6 +401,84 @@ process.stdin.on("end", () => {
     finally {
         await Promise.all([fake.dir, sessionDirectory].map((directory) => rm(directory, { recursive: true, force: true })));
     }
+});
+
+test("inherited child turns use their stated cwd, while markerless watchdog requests refuse or explicitly borrow", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "provider-parent-cwd-"));
+    const child = await mkdtemp(join(tmpdir(), "provider-child-cwd-"));
+    const spawnMarker = join(parent, "spawned");
+    const fake = await fakeClaude(`
+fs.writeFileSync(${JSON.stringify(spawnMarker)}, process.cwd());
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify(${JSON.stringify(toolInit)}) + "\\n");
+  process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"ok",usage:{}}) + "\\n");
+});`);
+    const registry = new Map([["parent", { cwd: parent }]]);
+    const installation = { executable: fake.executable, version: "test", subscriptionType: "pro" };
+    const run = (systemPrompt, options = {}, allowBorrowSoleDirectory = false) => createClaudeStream(installation, {
+        resolveSession: (request) => resolveSession(registry, { ...request, allowBorrowSoleDirectory }),
+    })(model, { ...toolContext, systemPrompt }, options).result();
+    const watchdog = `You are the main-session subagent watchdog for Pi.\nWorking directory: ${child}\nReview only the supplied parent turn delta.`;
+    try {
+        const childTurn = await run(`Child agent\nCurrent working directory: ${child}`, { sessionId: "unregistered-child" });
+        assert.equal(childTurn.stopReason, "stop", childTurn.errorMessage);
+        assert.equal(await realpath(await readFile(spawnMarker, "utf8")), await realpath(child));
+        assert.equal((await waitForRequestMetrics((entry) => entry.sessionResolution === "prompt")).errorCategory, undefined);
+        await rm(spawnMarker);
+
+        const refused = await run(watchdog);
+        assert.equal(refused.stopReason, "error");
+        assert.match(refused.errorMessage ?? "", /refusing to borrow the sole live session/);
+        assert.equal((await waitForRequestMetrics((entry) => entry.errorCategory === "working_directory")).sessionResolution, undefined);
+        await assert.rejects(access(spawnMarker));
+
+        const borrowed = await run(watchdog, {}, true);
+        assert.equal(borrowed.stopReason, "stop", borrowed.errorMessage);
+        assert.equal(await realpath(await readFile(spawnMarker, "utf8")), await realpath(parent));
+        assert.equal((await waitForRequestMetrics((entry) => entry.sessionResolution === "single")).errorCategory, undefined);
+    } finally {
+        await Promise.all([parent, child, fake.dir].map((directory) => rm(directory, { recursive: true, force: true })));
+    }
+});
+
+test("a payload hook cannot add tools to a markerless tool-free borrow", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "provider-oneshot-cwd-"));
+    let claims = 0;
+    try {
+        const result = await createClaudeStream(
+            { executable: "/unused/claude", version: "test", subscriptionType: "pro" },
+            {
+                resolveSession: (request) => resolveSession(new Map([["parent", { cwd: directory }]]), request),
+                claimLaunch: async () => { claims += 1; },
+            },
+        )(model, context, { onPayload: (payload) => ({ ...payload, tools: toolContext.tools }) }).result();
+        assert.equal(result.stopReason, "error");
+        assert.match(result.errorMessage ?? "", /gained tools after before_provider_request/);
+        assert.equal(claims, 0);
+        assert.equal((await waitForRequestMetrics((entry) => entry.errorCategory === "working_directory")).sessionResolution, "oneshot");
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("new Pi transcript system messages fail before cwd routing, payload hooks, or launch", async () => {
+    let routes = 0;
+    let hooks = 0;
+    let claims = 0;
+    const result = await createClaudeStream(
+        { executable: "/unused/claude", version: "test", subscriptionType: "pro" },
+        { resolveSession: () => { routes += 1; return { cwd: tmpdir() }; }, claimLaunch: async () => { claims += 1; } },
+    )(model, {
+        messages: [
+            { role: "system", content: "Current working directory: /child", toolsAdded: toolContext.tools, timestamp: 0 },
+            ...context.messages,
+        ],
+    }, { onPayload: () => { hooks += 1; } }).result();
+    assert.equal(result.stopReason, "error");
+    assert.match(result.errorMessage ?? "", /transcript system messages.*Pi 0\.85\.1/);
+    assert.deepEqual([routes, hooks, claims], [0, 0, 0]);
+    assert.equal((await waitForRequestMetrics((entry) => entry.errorCategory === "content_shape")).sessionResolution, undefined);
 });
 test("provider forwards and reserves Pi's effective per-request output limit", async () => {
     const directory = await mkdtemp(join(tmpdir(), "provider-max-tokens-"));

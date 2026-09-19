@@ -19,6 +19,7 @@ export interface SessionRequest {
   sessionId?: string;
   systemPrompt?: string;
   hasTools: boolean;
+  allowBorrowSoleDirectory?: boolean;
 }
 
 // Process-global rather than module-scoped, because a Pi host can hold more than
@@ -43,9 +44,10 @@ export function sessionRegistry(): Map<string, SessionEntry> {
 
 /**
  * The working directory Pi states for this request, or undefined when its prompt
- * names none. Best effort by construction: Pi renders it as a trailing
- * `Current working directory:` line up to 0.85.1 and as a `<cwd>` section after
- * that, and an extension that forces the system prompt suppresses it entirely.
+ * names none. Best effort by construction: Pi 0.85.1 renders it as a trailing
+ * `Current working directory:` line; an inspected later checkout uses a `<cwd>`
+ * section, but its transcript provider input needs a separate adapter before it
+ * can be served. An extension that forces the system prompt can omit cwd entirely.
  *
  * Both readings take Pi's *last* statement, and that is load-bearing rather than
  * incidental. Pi renders project context -- the repository's own instruction
@@ -71,14 +73,16 @@ export function promptWorkingDirectory(systemPrompt: string | undefined): string
     .map((span) => [span.index, span.index + span[0].length] as const);
   const sections = [...systemPrompt.matchAll(/<cwd>\r?\n([^\n]+)\r?\n<\/cwd>/g)]
     .filter((section) => !repositoryAuthored.some(([start, end]) => section.index >= start && section.index < end));
-  const stated = sections.at(-1)?.[1] ?? /\r?\nCurrent working directory: ([^\n]+)\s*$/.exec(systemPrompt)?.[1];
+  const section = sections.at(-1);
+  const trailingLine = /\r?\nCurrent working directory: ([^\n]+)\s*$/.exec(systemPrompt);
+  const stated = trailingLine && (!section || trailingLine.index > section.index) ? trailingLine[1] : section?.[1];
   return stated?.trim() || undefined;
 }
 
 /**
- * Resolve the session a request belongs to, never silently substituting another
- * session's directory. `undefined` means no session is live at all, which the
- * caller reports as Pi's own "not started" failure.
+ * Resolve the directory before a payload hook can change the request. Prompt
+ * declarations are a cooperative convention, not authenticated session data.
+ * `undefined` means no session is live at all.
  */
 export function resolveSession(
   registry: ReadonlyMap<string, SessionEntry>,
@@ -107,14 +111,20 @@ export function resolveSession(
     const host = live.findLast((entry) => sameDirectory(entry.cwd, stated)) ?? live[live.length - 1];
     return { ...host, cwd: stated, resolution: "prompt" };
   }
-  if (live.length === 1) return { ...live[0], resolution: "single" };
   // Pi's compaction and branch summaries arrive with a freshly generated session
-  // id and no tools. Nothing can be misdirected without a tool to propose, and
-  // their prompt carries no directory, so the newest live session hosts them
-  // rather than failing /compact whenever several sessions share a process.
+  // id and no tools. Their prompt carries no directory, so the newest live
+  // session hosts them rather than failing /compact. This does not prove that
+  // the summary belongs to that session.
   if (!request.hasTools) return { ...live[live.length - 1], resolution: "oneshot" };
+  // A direct Agent can have a different cwd even when this provider registered
+  // only one session. Preserve the old borrow solely as an explicit opt-in.
+  if (live.length === 1 && request.allowBorrowSoleDirectory) {
+    return { ...live[0], resolution: "single" };
+  }
   return {
-    error: `this request's Pi session (${request.sessionId ?? "no session id"}) was never started through this provider and ${live.length} sessions are live, so its working directory is unknown`,
+    error: live.length === 1
+      ? `this tool-bearing request (${request.sessionId ?? "no session id"}) has no registered session or recognized working directory in its original Pi system prompt; refusing to borrow the sole live session's directory. The caller must state its cwd in Pi's prompt format, or set PI_CLAUDE_CODE_PROVIDER_BORROW_SOLE_DIRECTORY=on to accept the ambiguous borrow`
+      : `this tool-bearing request (${request.sessionId ?? "no session id"}) has no registered session or recognized working directory in its original Pi system prompt and ${live.length} sessions are live`,
   };
 }
 
