@@ -110,6 +110,7 @@ export interface DoctorSummaryInput {
   metrics?: RequestMetrics;
   metricsLogError?: string;
   runtimeCleanup: RuntimeCleanupResult;
+  includeProcessState?: boolean;
   bridgeProbe?: BridgeProbeResult;
 }
 
@@ -141,12 +142,14 @@ export function formatDoctorSummary(input: DoctorSummaryInput): string {
   if (input.bridgeProbe) {
     lines.push(`Bridge: ${input.bridgeProbe.ok ? "ok" : "BROKEN"} via ${formatBridgeArgv(input.bridgeProbe.argv)} (${input.bridgeProbe.detail})`);
   }
-  lines.push(metrics
-    ? `Last request: ${metrics.requestedModel}/${metrics.effort}, ${metrics.messageCount} messages, ${metrics.estimatedInputTokens} estimated transport tokens, ${reportedUsage}, ${metrics.durationMs ?? 0}ms, ${metrics.stopReason ?? "unknown"}${metrics.errorCategory ? ` (${metrics.errorCategory})` : ""}${metrics.cleanupComplete ? "" : ", cleanup incomplete"}`
-    : "Last request: no request metrics recorded yet");
-  if (input.metricsLogError) lines.push(`Metrics log error: ${input.metricsLogError}`);
-  if (input.runtimeCleanup.removed > 0 || input.runtimeCleanup.failures > 0) {
-    lines.push(`Stale runtime cleanup: ${input.runtimeCleanup.removed} removed, ${input.runtimeCleanup.failures} ${input.runtimeCleanup.failures === 1 ? "failure" : "failures"}`);
+  if (input.includeProcessState !== false) {
+    lines.push(metrics
+      ? `Last request: ${metrics.requestedModel}/${metrics.effort}, ${metrics.messageCount} messages, ${metrics.estimatedInputTokens} estimated transport tokens, ${reportedUsage}, ${metrics.durationMs ?? 0}ms, ${metrics.stopReason ?? "unknown"}${metrics.errorCategory ? ` (${metrics.errorCategory})` : ""}${metrics.cleanupComplete ? "" : ", cleanup incomplete"}`
+      : "Last request: no request metrics recorded yet");
+    if (input.metricsLogError) lines.push(`Metrics log error: ${input.metricsLogError}`);
+    if (input.runtimeCleanup.removed > 0 || input.runtimeCleanup.failures > 0) {
+      lines.push(`Stale runtime cleanup: ${input.runtimeCleanup.removed} removed, ${input.runtimeCleanup.failures} ${input.runtimeCleanup.failures === 1 ? "failure" : "failures"}`);
+    }
   }
   return lines.join("\n");
 }

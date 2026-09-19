@@ -1,17 +1,41 @@
 import assert from "node:assert/strict";
-import { access, chmod, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, DefaultPackageManager, SettingsManager, formatSize } from "@earendil-works/pi-coding-agent";
-import initializePiClaudeCodeProvider from "../../extensions/index.ts";
-import implementation from "../../extensions/pi-claude-code-provider.ts";
+import initializePiClaudeCodeProvider, { createPiClaudeCodeProvider } from "../../extensions/index.ts";
+import implementation, { initializePiClaudeCodeProvider as initializeConfiguredProvider } from "../../extensions/pi-claude-code-provider.ts";
 import { VERIFIED_VERSIONS, platformStatus } from "../../src/compatibility.ts";
 import { CAPTURED_CLAUDE_HELP_PATH, ELIGIBLE_CLAUDE_AUTH } from "../support/claude-fixture.js";
 import { nodeFixtureSource } from "../support/node-fixture.js";
 
 const piClaudeCodeProvider = (pi) => initializePiClaudeCodeProvider(pi);
+const CONFIGURED_ACCOUNTS = Object.freeze({
+    primary: Object.freeze({
+        auth: Object.freeze({ ...ELIGIBLE_CLAUDE_AUTH, email: "primary@example.test", orgId: "org_primary" }),
+        fingerprint: "sha256:a6ec27b5b85ab0d35d9cf3d7cf13d4448c1c09e5f2a022851266927e9f86a2d1",
+    }),
+    secondary: Object.freeze({
+        auth: Object.freeze({ ...ELIGIBLE_CLAUDE_AUTH, email: "secondary@example.test", orgId: "org_secondary" }),
+        fingerprint: "sha256:063d402cc24d9830411472d25a4be57af881048ea10315153373858ff33651dd",
+    }),
+});
+
+function configuredInstances(primaryRoot, secondaryRoot) {
+    return [
+        { providerId: "claude-primary", label: "primary", configRoot: primaryRoot, expectedIdentityFingerprint: CONFIGURED_ACCOUNTS.primary.fingerprint },
+        { providerId: "claude-secondary", label: "secondary", configRoot: secondaryRoot, expectedIdentityFingerprint: CONFIGURED_ACCOUNTS.secondary.fingerprint },
+    ];
+}
+
+function configuredAuthByRoot(primaryRoot, secondaryRoot) {
+    return {
+        [primaryRoot]: CONFIGURED_ACCOUNTS.primary.auth,
+        [secondaryRoot]: CONFIGURED_ACCOUNTS.secondary.auth,
+    };
+}
 
 function fakePi(initialTools = []) {
     const commands = new Map();
@@ -37,7 +61,16 @@ function fakePi(initialTools = []) {
     };
 }
 
-async function createFakeClaude(searchResult = "ok", { searchDelayMs = 0, rateLimitInfo, reportCwd = false } = {}) {
+async function createFakeClaude(searchResult = "ok", {
+    searchDelayMs = 0,
+    rateLimitInfo,
+    reportCwd = false,
+    configRootResults = {},
+    configRootAuth = {},
+    defaultAuth = ELIGIBLE_CLAUDE_AUTH,
+    failAuthWithConfigRoot = false,
+    failRequestWithConfigRoot = false,
+} = {}) {
     const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-extension-"));
     const executable = join(directory, process.platform === "win32" ? "claude.cjs" : "claude");
     const rateLimitEvents = Array.isArray(rateLimitInfo) ? rateLimitInfo : rateLimitInfo ? [rateLimitInfo] : [];
@@ -46,20 +79,751 @@ async function createFakeClaude(searchResult = "ok", { searchDelayMs = 0, rateLi
     // Keep fake Claude JSONL visible in sandboxes that lose buffered Node child stdout.
     await writeFile(executable, nodeFixtureSource(`
 if (process.argv.includes("--version")) process.stdout.write(${JSON.stringify(`${VERIFIED_VERSIONS.claudeCode}\n`)});
-else if (process.argv[2] === "auth" && process.argv[3] === "status") process.stdout.write(JSON.stringify(${JSON.stringify(ELIGIBLE_CLAUDE_AUTH)}));
+else if (process.argv[2] === "auth" && process.argv[3] === "status") {
+  if (${JSON.stringify(failAuthWithConfigRoot)}) {
+    process.stderr.write("auth failed under " + process.env.CLAUDE_CONFIG_DIR);
+    process.exit(17);
+  }
+  process.stdout.write(JSON.stringify(${JSON.stringify(configRootAuth)}[process.env.CLAUDE_CONFIG_DIR] ?? ${JSON.stringify(defaultAuth)}));
+}
 else if (process.argv.includes("--help")) process.stdout.write(require("node:fs").readFileSync(${JSON.stringify(CAPTURED_CLAUDE_HELP_PATH)}, "utf8"));
+else if (${JSON.stringify(failRequestWithConfigRoot)}) {
+  process.stderr.write("request failed under " + process.env.CLAUDE_CONFIG_DIR);
+  process.exit(17);
+}
 else {
   setTimeout(() => {
     const providerMode = process.argv.includes("--system-prompt-file");
     process.stdout.write(JSON.stringify(providerMode ? ${JSON.stringify(providerInit)} : ${JSON.stringify(init)}) + "\\n");
     for (const rateLimitInfo of ${JSON.stringify(rateLimitEvents)}) process.stdout.write(JSON.stringify({type:"rate_limit_event",rate_limit_info:rateLimitInfo}) + "\\n");
-    process.stdout.write(JSON.stringify({type:"result",is_error:false,result:${reportCwd ? "providerMode ? process.cwd() : " : ""}${JSON.stringify(searchResult)}}) + "\\n");
+    const configuredResult = ${JSON.stringify(configRootResults)}[process.env.CLAUDE_CONFIG_DIR] ?? ${JSON.stringify(searchResult)};
+    process.stdout.write(JSON.stringify({type:"result",is_error:false,result:${reportCwd ? "providerMode ? process.cwd() : " : ""}configuredResult}) + "\\n");
   }, ${searchDelayMs});
 }
 `), { mode: 0o700 });
     await chmod(executable, 0o700);
     return { directory, executable };
 }
+
+test("account-specific providers reject duplicate canonical Claude configuration roots before registration", async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-account-root-"));
+    try {
+        const pi = fakePi();
+        const extension = createPiClaudeCodeProvider({
+            instances: configuredInstances(configRoot, configRoot),
+        });
+
+        await assert.rejects(extension(pi.api), /distinct.*configuration root/i);
+        assert.equal(pi.providers.size, 0);
+    } finally {
+        await rm(configRoot, { recursive: true, force: true });
+    }
+});
+
+test("account-specific provider descriptors require distinct opaque IDs and labels", async () => {
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = join(primaryRoot, "unavailable-claude");
+    try {
+        const valid = configuredInstances(primaryRoot, secondaryRoot);
+        const cases = [
+            [],
+            [valid[0], { ...valid[1], providerId: valid[0].providerId }],
+            [valid[0], { ...valid[1], label: valid[0].label }],
+            [{ ...valid[0], providerId: "Claude Primary" }],
+            [{ ...valid[0], label: "primary@example.test" }],
+        ];
+        for (const instances of cases) {
+            const pi = fakePi();
+            await assert.rejects(createPiClaudeCodeProvider({ instances })(pi.api), /configured instance|provider id|opaque label/i);
+            assert.equal(pi.providers.size, 0);
+            assert.equal(pi.commands.size, 0);
+        }
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("the exported initializer enforces configured instance descriptor and root validation", async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-direct-initializer-"));
+    const { directory, executable } = await createFakeClaude("ok", {
+        configRootAuth: { [configRoot]: CONFIGURED_ACCOUNTS.primary.auth },
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        const invalid = {
+            ...configuredInstances(configRoot, configRoot)[0],
+            label: "primary@example.test",
+        };
+
+        await assert.rejects(
+            initializeConfiguredProvider(pi.api, [invalid]),
+            /opaque label/i,
+        );
+        assert.equal(pi.providers.size, 0);
+        assert.equal(pi.commands.size, 0);
+        assert.equal(pi.handlers.size, 0);
+
+        const missingRootPi = fakePi();
+        const missingRoot = join(configRoot, "missing");
+        await assert.rejects(
+            initializeConfiguredProvider(missingRootPi.api, [{
+                ...configuredInstances(configRoot, configRoot)[0],
+                configRoot: missingRoot,
+            }]),
+            (error) => /primary/.test(error.message)
+                && /configuration root/i.test(error.message)
+                && !error.message.includes(missingRoot),
+        );
+        assert.equal(missingRootPi.providers.size, 0);
+        assert.equal(missingRootPi.commands.size, 0);
+        assert.equal(missingRootPi.handlers.size, 0);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(configRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("account-specific provider descriptors require a valid identity fingerprint before registration", async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-fingerprint-validation-"));
+    const { directory, executable } = await createFakeClaude("ok", {
+        configRootAuth: { [configRoot]: CONFIGURED_ACCOUNTS.primary.auth },
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const valid = configuredInstances(configRoot, configRoot)[0];
+        const cases = [
+            { ...valid, expectedIdentityFingerprint: undefined },
+            { ...valid, expectedIdentityFingerprint: "sha256:not-a-fingerprint" },
+        ];
+        for (const instance of cases) {
+            const pi = fakePi();
+            await assert.rejects(
+                createPiClaudeCodeProvider({ instances: [instance] })(pi.api),
+                /identity fingerprint/i,
+            );
+            assert.equal(pi.providers.size, 0);
+            assert.equal(pi.commands.size, 0);
+            assert.equal(pi.handlers.size, 0);
+        }
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(configRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("account-specific provider startup uses the validated descriptor snapshot", async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-descriptor-snapshot-"));
+    const { directory, executable } = await createFakeClaude("ok", {
+        configRootAuth: { [configRoot]: CONFIGURED_ACCOUNTS.primary.auth },
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const instance = { ...configuredInstances(configRoot, configRoot)[0], configRoot };
+        const pi = fakePi();
+        const startup = createPiClaudeCodeProvider({ instances: [instance] })(pi.api);
+        Object.assign(instance, {
+            providerId: "Changed Invalid Provider",
+            label: "changed@example.test",
+            expectedIdentityFingerprint: CONFIGURED_ACCOUNTS.secondary.fingerprint,
+        });
+
+        await startup;
+
+        assert.deepEqual([...pi.providers.keys()], ["claude-primary"]);
+        assert.equal(pi.providers.get("claude-primary").name, "Claude Code Subscription (primary)");
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(configRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("account-specific providers reject missing, non-directory, relative, and non-canonical roots", async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-root-validation-"));
+    const fileRoot = join(configRoot, "file");
+    await writeFile(fileRoot, "not a directory");
+    const cases = [
+        join(configRoot, "missing"),
+        fileRoot,
+        relative(process.cwd(), configRoot),
+        `${configRoot}/.`,
+        `${configRoot}/`,
+    ];
+    try {
+        for (const invalidRoot of cases) {
+            const pi = fakePi();
+            await assert.rejects(
+                createPiClaudeCodeProvider({
+                    instances: [{ ...configuredInstances(configRoot, configRoot)[0], configRoot: invalidRoot }],
+                })(pi.api),
+                (error) => /configuration root/i.test(error.message) && !error.message.includes(invalidRoot),
+            );
+            assert.equal(pi.providers.size, 0);
+            assert.equal(pi.commands.size, 0);
+        }
+    } finally {
+        await rm(configRoot, { recursive: true, force: true });
+    }
+});
+
+test("account-specific startup labels only the instance with an invalid configuration root", async () => {
+    const primaryRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-"));
+    const missingRoot = join(primaryRoot, "missing-secondary");
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = join(primaryRoot, "unavailable-claude");
+    try {
+        const pi = fakePi();
+        await assert.rejects(
+            createPiClaudeCodeProvider({
+                instances: configuredInstances(primaryRoot, missingRoot),
+            })(pi.api),
+            (error) => /secondary/.test(error.message)
+                && !/primary/.test(error.message)
+                && /configuration root/i.test(error.message)
+                && !error.message.includes(missingRoot),
+        );
+        assert.equal(pi.providers.size, 0);
+        assert.equal(pi.commands.size, 0);
+        assert.equal(pi.handlers.size, 0);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await rm(primaryRoot, { recursive: true, force: true });
+    }
+});
+
+test("account-specific providers reject symlink-ambiguous configuration roots before registration", async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-real-root-"));
+    const linkedRoot = `${configRoot}-link`;
+    await symlink(configRoot, linkedRoot, process.platform === "win32" ? "junction" : "dir");
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = join(configRoot, "unavailable-claude");
+    try {
+        const pi = fakePi();
+        const extension = createPiClaudeCodeProvider({
+            instances: [
+                { ...configuredInstances(configRoot, configRoot)[0], configRoot: linkedRoot },
+            ],
+        });
+
+        await assert.rejects(extension(pi.api), /canonical.*configuration root/i);
+        assert.equal(pi.providers.size, 0);
+        assert.equal(pi.commands.size, 0);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(linkedRoot, { recursive: true, force: true }),
+            rm(configRoot, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("account-specific providers fail closed when a root resolves the wrong account identity", async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-wrong-account-"));
+    const { directory, executable } = await createFakeClaude("ok", {
+        configRootAuth: { [configRoot]: CONFIGURED_ACCOUNTS.secondary.auth },
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: [{ ...configuredInstances(configRoot, configRoot)[0], configRoot }],
+        })(pi.api);
+
+        assert.equal(pi.providers.size, 0);
+        const notices = [];
+        pi.handlers.get("session_start")[0]({}, { ui: { notify(message) { notices.push(message); } } });
+        assert.equal(notices.length, 1);
+        assert.match(notices[0], /identity does not match/i);
+        for (const privateValue of [
+            configRoot,
+            CONFIGURED_ACCOUNTS.primary.fingerprint,
+            CONFIGURED_ACCOUNTS.secondary.auth.email,
+            CONFIGURED_ACCOUNTS.secondary.auth.orgId,
+        ]) assert.equal(notices[0].includes(privateValue), false);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(configRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("account-specific startup identifies the configured instance that fails preflight", async () => {
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    const { directory, executable } = await createFakeClaude("ok", {
+        configRootAuth: {
+            [primaryRoot]: CONFIGURED_ACCOUNTS.primary.auth,
+            [secondaryRoot]: CONFIGURED_ACCOUNTS.primary.auth,
+        },
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: configuredInstances(primaryRoot, secondaryRoot),
+        })(pi.api);
+
+        assert.equal(pi.providers.size, 0);
+        const notices = [];
+        pi.handlers.get("session_start")[0]({}, { ui: { notify(message) { notices.push(message); } } });
+        assert.equal(notices.length, 1);
+        assert.match(notices[0], /secondary/);
+        assert.doesNotMatch(notices[0], /primary/);
+        assert.match(notices[0], /identity does not match/i);
+        for (const privateValue of [
+            primaryRoot,
+            secondaryRoot,
+            CONFIGURED_ACCOUNTS.secondary.fingerprint,
+            CONFIGURED_ACCOUNTS.primary.auth.email,
+            CONFIGURED_ACCOUNTS.primary.auth.orgId,
+        ]) assert.equal(notices[0].includes(privateValue), false);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("account-specific providers fail closed on unsupported authentication", async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-unsupported-auth-"));
+    const unsupportedAuth = { ...CONFIGURED_ACCOUNTS.primary.auth, authMethod: "apiKey" };
+    const { directory, executable } = await createFakeClaude("ok", {
+        configRootAuth: { [configRoot]: unsupportedAuth },
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: [{ ...configuredInstances(configRoot, configRoot)[0], configRoot }],
+        })(pi.api);
+
+        assert.equal(pi.providers.size, 0);
+        const notices = [];
+        pi.handlers.get("session_start")[0]({}, { ui: { notify(message) { notices.push(message); } } });
+        assert.equal(notices.length, 1);
+        assert.match(notices[0], /first-party claude\.ai subscription/i);
+        assert.equal(notices[0].includes(configRoot), false);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(configRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("account-specific startup failures redact the bound configuration root", async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-redacted-root-"));
+    const { directory, executable } = await createFakeClaude("ok", { failAuthWithConfigRoot: true });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: [{ ...configuredInstances(configRoot, configRoot)[0], configRoot }],
+        })(pi.api);
+
+        assert.equal(pi.providers.size, 0);
+        const notices = [];
+        pi.handlers.get("session_start")[0]({}, { ui: { notify(message) { notices.push(message); } } });
+        assert.equal(notices.length, 1);
+        assert.equal(notices[0].includes(configRoot), false);
+        assert.match(notices[0], /\[configuration root\]/);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(configRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("account-specific providers fail closed when the Claude executable is unavailable", async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-unavailable-executable-"));
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = join(tmpdir(), "definitely-unavailable-claude");
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: [{ ...configuredInstances(configRoot, configRoot)[0], configRoot }],
+        })(pi.api);
+
+        assert.equal(pi.providers.size, 0);
+        const notices = [];
+        pi.handlers.get("session_start")[0]({}, { ui: { notify(message) { notices.push(message); } } });
+        assert.equal(notices.length, 1);
+        assert.match(notices[0], /executable is not runnable/i);
+        assert.equal(notices[0].includes(configRoot), false);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await rm(configRoot, { recursive: true, force: true });
+    }
+});
+
+test("account-specific providers register distinct stable provider IDs", async () => {
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    const { directory, executable } = await createFakeClaude("ok", {
+        configRootAuth: configuredAuthByRoot(primaryRoot, secondaryRoot),
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        const extension = createPiClaudeCodeProvider({
+            instances: configuredInstances(primaryRoot, secondaryRoot),
+        });
+
+        await extension(pi.api);
+
+        assert.deepEqual([...pi.providers.keys()], ["claude-primary", "claude-secondary"]);
+        assert.equal(pi.providers.has("pi-claude-code-provider"), false);
+        assert.match(pi.providers.get("claude-primary").name, /primary/i);
+        assert.match(pi.providers.get("claude-secondary").name, /secondary/i);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("each account-specific provider request uses only its bound Claude configuration root", async () => {
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    const { directory, executable } = await createFakeClaude("unbound", {
+        configRootResults: {
+            [primaryRoot]: "primary-account",
+            [secondaryRoot]: "secondary-account",
+        },
+        configRootAuth: configuredAuthByRoot(primaryRoot, secondaryRoot),
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        const extension = createPiClaudeCodeProvider({
+            instances: configuredInstances(primaryRoot, secondaryRoot),
+        });
+        await extension(pi.api);
+        const sessionStart = pi.handlers.get("session_start")[0];
+        sessionStart({}, { cwd: tmpdir(), ui: { notify() {} } });
+
+        for (const [providerId, expectedText] of [["claude-primary", "primary-account"], ["claude-secondary", "secondary-account"]]) {
+            const provider = pi.providers.get(providerId);
+            const configured = provider.models.find((model) => model.id === "sonnet");
+            const model = { ...configured, provider: providerId, api: provider.api, baseUrl: provider.baseUrl };
+            const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+            const result = await provider.streamSimple(model, context, { reasoning: "medium" }).result();
+            assert.equal(result.stopReason, "stop");
+            assert.deepEqual(result.content, [{ type: "text", text: expectedText }]);
+        }
+
+        await pi.handlers.get("session_shutdown")[0]({}, {});
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("account-specific request failures redact the bound configuration root", async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-request-redaction-"));
+    const { directory, executable } = await createFakeClaude("ok", {
+        configRootAuth: { [configRoot]: CONFIGURED_ACCOUNTS.primary.auth },
+        failRequestWithConfigRoot: true,
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: [{ ...configuredInstances(configRoot, configRoot)[0], configRoot }],
+        })(pi.api);
+        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify() {} } });
+        const provider = pi.providers.get("claude-primary");
+        const configured = provider.models.find((model) => model.id === "sonnet");
+        const model = { ...configured, provider: "claude-primary", api: provider.api, baseUrl: provider.baseUrl };
+        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+
+        const result = await provider.streamSimple(model, context, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "error");
+        assert.equal(result.errorMessage.includes(configRoot), false);
+        assert.match(result.errorMessage, /<PRIVATE>/);
+
+        const search = pi.tools.get("pi_claude_code_provider_web_search");
+        await assert.rejects(
+            search.execute("call", { query: "query" }, undefined),
+            (error) => !error.message.includes(configRoot) && /<PRIVATE>/.test(error.message),
+        );
+        await pi.handlers.get("session_shutdown")[0]({}, {});
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(configRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("the account-specific doctor checks every bound root and reports labels without paths", async () => {
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    const ineligibleAuth = { loggedIn: false };
+    const { directory, executable } = await createFakeClaude("ok", {
+        configRootAuth: configuredAuthByRoot(primaryRoot, secondaryRoot),
+        defaultAuth: ineligibleAuth,
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: configuredInstances(primaryRoot, secondaryRoot),
+        })(pi.api);
+        const notices = [];
+        await pi.commands.get("pi-claude-code-provider-doctor").handler("", {
+            ui: { notify(message, level) { notices.push({ message, level }); } },
+        });
+
+        assert.equal(notices.length, 1);
+        assert.match(notices[0].message, /primary/i);
+        assert.match(notices[0].message, /secondary/i);
+        assert.equal(notices[0].message.includes(primaryRoot), false);
+        assert.equal(notices[0].message.includes(secondaryRoot), false);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("the account-specific doctor does not attribute process-wide request metrics to each account", async () => {
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    const { directory, executable } = await createFakeClaude("ok", {
+        configRootAuth: configuredAuthByRoot(primaryRoot, secondaryRoot),
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: configuredInstances(primaryRoot, secondaryRoot),
+        })(pi.api);
+        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify() {} } });
+        const provider = pi.providers.get("claude-secondary");
+        const configured = provider.models.find((model) => model.id === "sonnet");
+        const model = { ...configured, provider: "claude-secondary", api: provider.api, baseUrl: provider.baseUrl };
+        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+        assert.equal((await provider.streamSimple(model, context, { reasoning: "medium" }).result()).stopReason, "stop");
+
+        const notices = [];
+        await pi.commands.get("pi-claude-code-provider-doctor").handler("", {
+            ui: { notify(message, level) { notices.push({ message, level }); } },
+        });
+
+        assert.equal(notices.length, 1);
+        assert.match(notices[0].message, /primary/);
+        assert.match(notices[0].message, /secondary/);
+        assert.doesNotMatch(notices[0].message, /Last request:/);
+        assert.doesNotMatch(notices[0].message, /Metrics log error:/);
+        assert.doesNotMatch(notices[0].message, /Stale runtime cleanup:/);
+        await pi.handlers.get("session_shutdown")[0]({}, {});
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("the account-specific doctor fully redacts nested configuration roots", async () => {
+    const parentRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-parent-root-"));
+    const nestedRoot = join(parentRoot, "nested-secret-root");
+    await mkdir(nestedRoot);
+    const successful = await createFakeClaude("ok", {
+        configRootAuth: configuredAuthByRoot(parentRoot, nestedRoot),
+    });
+    const failing = await createFakeClaude("ok", { failAuthWithConfigRoot: true });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = successful.executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: configuredInstances(parentRoot, nestedRoot),
+        })(pi.api);
+        process.env.PI_CLAUDE_CODE_PROVIDER_PATH = failing.executable;
+        const notices = [];
+
+        await pi.commands.get("pi-claude-code-provider-doctor").handler("", {
+            ui: { notify(message, level) { notices.push({ message, level }); } },
+        });
+
+        assert.equal(notices.length, 1);
+        assert.equal(notices[0].message.includes(parentRoot), false);
+        assert.equal(notices[0].message.includes(nestedRoot), false);
+        assert.equal(notices[0].message.includes("nested-secret-root"), false);
+        assert.match(notices[0].message, /\[configuration root\]/);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(parentRoot, { recursive: true, force: true }),
+            rm(successful.directory, { recursive: true, force: true }),
+            rm(failing.directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("the account-specific doctor attributes an invalid root only to the affected instance", async () => {
+    const [primaryRoot, secondaryRoot, replacementRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-replacement-")),
+    ]);
+    const { directory, executable } = await createFakeClaude("ok", {
+        configRootAuth: configuredAuthByRoot(primaryRoot, secondaryRoot),
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: configuredInstances(primaryRoot, secondaryRoot),
+        })(pi.api);
+        await rm(secondaryRoot, { recursive: true, force: true });
+        await symlink(replacementRoot, secondaryRoot, process.platform === "win32" ? "junction" : "dir");
+        const notices = [];
+
+        await pi.commands.get("pi-claude-code-provider-doctor").handler("", {
+            ui: { notify(message, level) { notices.push({ message, level }); } },
+        });
+
+        assert.equal(notices.length, 1);
+        assert.equal(notices[0].level, "warning");
+        const sections = notices[0].message.split("\n\n");
+        const primary = sections.find((section) => section.startsWith("primary\n"));
+        const secondary = sections.find((section) => section.startsWith("secondary\n"));
+        assert.ok(primary);
+        assert.ok(secondary);
+        assert.doesNotMatch(primary, /Claude Code check failed/);
+        assert.match(secondary, /canonical.*configuration root/i);
+        assert.equal(notices[0].message.includes(primaryRoot), false);
+        assert.equal(notices[0].message.includes(secondaryRoot), false);
+        assert.equal(notices[0].message.includes(replacementRoot), false);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(replacementRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("the account-specific doctor rejects a configuration root replaced by a symlink", async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-doctor-root-"));
+    const replacementRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-doctor-replacement-"));
+    const { directory, executable } = await createFakeClaude("ok", {
+        configRootAuth: { [configRoot]: CONFIGURED_ACCOUNTS.primary.auth },
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: [{ ...configuredInstances(configRoot, configRoot)[0], configRoot }],
+        })(pi.api);
+        await rm(configRoot, { recursive: true, force: true });
+        await symlink(replacementRoot, configRoot, process.platform === "win32" ? "junction" : "dir");
+        const notices = [];
+
+        await pi.commands.get("pi-claude-code-provider-doctor").handler("", {
+            ui: { notify(message, level) { notices.push({ message, level }); } },
+        });
+
+        assert.equal(notices.length, 1);
+        assert.equal(notices[0].level, "warning");
+        assert.match(notices[0].message, /canonical.*configuration root/i);
+        assert.equal(notices[0].message.includes(configRoot), false);
+        assert.equal(notices[0].message.includes(replacementRoot), false);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(configRoot, { recursive: true, force: true }),
+            rm(replacementRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
 
 test("platform acknowledgement hides only the startup advisory and leaves doctor truthful", async (t) => {
     const status = platformStatus();
@@ -90,6 +854,58 @@ test("platform acknowledgement hides only the startup advisory and leaves doctor
         if (originalAcknowledgement === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM;
         else process.env.PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM = originalAcknowledgement;
         await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("configured accounts report and deduplicate rate-limit warnings independently", async () => {
+    const warning = {
+        status: "allowed_warning",
+        rateLimitType: "five_hour",
+        utilization: 0.77,
+        resetsAt: 1_800_000_000,
+    };
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    const { directory, executable } = await createFakeClaude("ok", {
+        rateLimitInfo: [warning, warning],
+        configRootAuth: configuredAuthByRoot(primaryRoot, secondaryRoot),
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({
+            instances: configuredInstances(primaryRoot, secondaryRoot),
+        })(pi.api);
+        const notices = [];
+        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify(message, level) { notices.push({ message, level }); } } });
+        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+
+        for (const providerId of ["claude-primary", "claude-secondary"]) {
+            const provider = pi.providers.get(providerId);
+            const configured = provider.models.find((model) => model.id === "sonnet");
+            const model = { ...configured, provider: providerId, api: provider.api, baseUrl: provider.baseUrl };
+            await provider.streamSimple(model, context, { reasoning: "medium" }).result();
+            await provider.streamSimple(model, context, { reasoning: "medium" }).result();
+        }
+
+        const warnings = notices.filter(({ message }) => message.includes("rate limit warning"));
+        assert.equal(warnings.length, 2);
+        assert.match(warnings[0].message, /primary/);
+        assert.doesNotMatch(warnings[0].message, /secondary/);
+        assert.match(warnings[1].message, /secondary/);
+        assert.doesNotMatch(warnings[1].message, /primary/);
+        await pi.handlers.get("session_shutdown")[0]({}, {});
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
     }
 });
 

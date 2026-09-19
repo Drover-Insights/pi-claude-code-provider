@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { access, realpath } from "node:fs/promises";
 import { promisify } from "node:util";
 import { constants } from "node:fs";
@@ -40,7 +41,7 @@ export function claudeExecutable(): string {
   return process.env.PI_CLAUDE_CODE_PROVIDER_PATH?.trim() || "claude";
 }
 
-export function parseAuthStatus(stdout: string): ClaudeSubscriptionType {
+export function parseAuthStatus(stdout: string, expectedIdentityFingerprint?: string): ClaudeSubscriptionType {
   let status: ClaudeAuthStatus;
   try {
     status = JSON.parse(stdout) as ClaudeAuthStatus;
@@ -57,10 +58,49 @@ export function parseAuthStatus(stdout: string): ClaudeSubscriptionType {
   if (!ELIGIBLE_SUBSCRIPTIONS.has(subscription)) {
     throw new ClaudeCodeError("auth_ineligible", `Unsupported Claude subscription type: ${subscription}`);
   }
+  if (expectedIdentityFingerprint !== undefined) {
+    verifyAccountIdentity(status, expectedIdentityFingerprint);
+  }
   return subscription as ClaudeSubscriptionType;
 }
 
-export async function inspectClaudeInstallation(): Promise<ClaudeInstallation> {
+function verifyAccountIdentity(status: ClaudeAuthStatus, expectedIdentityFingerprint: string): void {
+  if (!/^sha256:[0-9a-f]{64}$/.test(expectedIdentityFingerprint)) {
+    throw new ClaudeCodeError(
+      "identity_fingerprint_invalid",
+      "Configured identity fingerprint must be lowercase sha256 with 64 hexadecimal digits",
+    );
+  }
+  if (typeof status.email !== "string" || typeof status.orgId !== "string") {
+    throw new ClaudeCodeError(
+      "identity_unavailable",
+      "Claude Code did not provide the account identity required for verification",
+    );
+  }
+  const email = status.email.trim().toLowerCase();
+  const orgId = status.orgId.trim();
+  if (!email || !orgId) {
+    throw new ClaudeCodeError(
+      "identity_unavailable",
+      "Claude Code did not provide the account identity required for verification",
+    );
+  }
+  const actual = createHash("sha256")
+    .update(`pi-claude-code-provider:claude-auth-identity:v1\n${email}\n${orgId}`, "utf8")
+    .digest();
+  const expected = Buffer.from(expectedIdentityFingerprint.slice("sha256:".length), "hex");
+  if (!timingSafeEqual(actual, expected)) {
+    throw new ClaudeCodeError(
+      "identity_mismatch",
+      "Claude Code account identity does not match the configured instance",
+    );
+  }
+}
+
+export async function inspectClaudeInstallation(
+  configRoot?: string,
+  expectedIdentityFingerprint?: string,
+): Promise<ClaudeInstallation> {
   const configuredExecutable = claudeExecutable();
   let executable: string;
   try {
@@ -83,9 +123,9 @@ export async function inspectClaudeInstallation(): Promise<ClaudeInstallation> {
 
   try {
     const [{ stdout: versionOutput }, { stdout: authOutput }, { stdout: helpOutput }] = await Promise.all([
-      execClaudeFile(executable, ["--version"]),
-      execClaudeFile(executable, ["auth", "status"]),
-      execClaudeFile(executable, ["--help"]),
+      execClaudeFile(executable, ["--version"], configRoot),
+      execClaudeFile(executable, ["auth", "status"], configRoot),
+      execClaudeFile(executable, ["--help"], configRoot),
     ]);
     const version = versionOutput.trim().match(/\d+\.\d+\.\d+/)?.[0];
     if (!version) throw new ClaudeCodeError("version_invalid", "Could not determine the Claude Code version");
@@ -93,7 +133,8 @@ export async function inspectClaudeInstallation(): Promise<ClaudeInstallation> {
     return {
       executable,
       version,
-      subscriptionType: parseAuthStatus(authOutput),
+      subscriptionType: parseAuthStatus(authOutput, expectedIdentityFingerprint),
+      configRoot,
     };
   } catch (error) {
     if (error instanceof ClaudeCodeError) throw error;
@@ -114,11 +155,14 @@ export function claudeLaunch(executable: string, args: readonly string[]): Scrip
   return { command: executable, args: [...args], env: {} };
 }
 
-async function execClaudeFile(executable: string, args: readonly string[]) {
+async function execClaudeFile(executable: string, args: readonly string[], configRoot?: string) {
   const launch = claudeLaunch(executable, args);
   return execFileAsync(launch.command, launch.args, {
     timeout: 10_000,
-    env: buildClaudeEnvironment(launch.env),
+    env: buildClaudeEnvironment({
+      ...launch.env,
+      ...(configRoot === undefined ? {} : { CLAUDE_CONFIG_DIR: configRoot }),
+    }),
   });
 }
 

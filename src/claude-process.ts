@@ -76,7 +76,13 @@ export function spawnClaudeProcess(options: ClaudeProcessOptions): ClaudeProcess
   const launch = claudeLaunch(options.installation.executable, options.args);
   const child = spawn(launch.command, launch.args, {
     cwd: options.cwd ?? options.directory,
-    env: buildClaudeEnvironment({ ...launch.env, ...options.env }),
+    env: buildClaudeEnvironment({
+      ...launch.env,
+      ...options.env,
+      ...(options.installation.configRoot === undefined
+        ? {}
+        : { CLAUDE_CONFIG_DIR: options.installation.configRoot }),
+    }),
     detached: process.platform !== "win32",
     windowsHide: process.platform === "win32",
     stdio: [options.stdin, "pipe", "pipe"],
@@ -116,7 +122,11 @@ export function spawnClaudeProcess(options: ClaudeProcessOptions): ClaudeProcess
     child,
     supervisor,
     recordOwnership: () => recordRuntimeChild(options.directory, child.pid ?? 0),
-    stderrExcerpt: () => stderrExcerpt(stderr, [options.directory, ...(options.privatePaths ?? [])]),
+    stderrExcerpt: () => stderrExcerpt(stderr, [
+      options.directory,
+      ...(options.installation.configRoot ? [options.installation.configRoot] : []),
+      ...(options.privatePaths ?? []),
+    ]),
     terminate,
     terminateInBackground,
     isTerminationFailure: (error) => terminationFailure !== undefined && error === terminationFailure,

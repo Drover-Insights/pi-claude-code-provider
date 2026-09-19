@@ -34,6 +34,36 @@ test("rejects API and malformed auth", () => {
     assert.throws(() => parseAuthStatus(JSON.stringify({ loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", subscriptionType: "free" })), /Unsupported/);
     assert.throws(() => parseAuthStatus("not json"), /invalid/);
 });
+
+test("verifies a versioned non-secret account identity fingerprint without returning identity fields", () => {
+    const status = {
+        ...ELIGIBLE_CLAUDE_AUTH,
+        email: " User@Example.COM ",
+        orgId: "org_123",
+    };
+    const expected = "sha256:5be8a1a4ac7d063bcab5287a3b39efe28beae15ace89af41bc28bedc88350585";
+    assert.equal(parseAuthStatus(JSON.stringify(status), expected), "pro");
+    assert.throws(
+        () => parseAuthStatus(JSON.stringify(status), `sha256:${"0".repeat(64)}`),
+        (error) => error.code === "identity_mismatch" && !error.message.includes(status.email) && !error.message.includes(status.orgId),
+    );
+    assert.throws(
+        () => parseAuthStatus(JSON.stringify(ELIGIBLE_CLAUDE_AUTH), expected),
+        (error) => error.code === "identity_unavailable" && !error.message.includes(expected),
+    );
+    for (const invalid of ["", "sha256:abc", `sha256:${"A".repeat(64)}`, `md5:${"0".repeat(32)}`]) {
+        assert.throws(
+            () => parseAuthStatus(JSON.stringify(status), invalid),
+            (error) => error.code === "identity_fingerprint_invalid" && (invalid === "" || !error.message.includes(invalid)),
+        );
+    }
+    for (const invalidIdentity of [{ email: 7, orgId: "org_123" }, { email: "user@example.com", orgId: {} }]) {
+        assert.throws(
+            () => parseAuthStatus(JSON.stringify({ ...ELIGIBLE_CLAUDE_AUTH, ...invalidIdentity }), expected),
+            (error) => error.code === "identity_unavailable",
+        );
+    }
+});
 test("builds an allowlisted Claude environment", () => {
     const forbidden = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "AWS_ACCESS_KEY_ID", "CLAUDE_CODE_OAUTH_TOKEN"];
     const originals = Object.fromEntries(forbidden.map((name) => [name, process.env[name]]));

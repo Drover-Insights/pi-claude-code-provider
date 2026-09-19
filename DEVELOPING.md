@@ -24,8 +24,8 @@ pi install /absolute/path/to/pi-claude-code-provider
 
 | Change area | Owning modules | Focused validation |
 | --- | --- | --- |
-| Extension startup, session lifetime, and session working directory | `extensions/index.ts` (manifest entry), `extensions/pi-claude-code-provider.ts` | `extension.test.js` |
-| Authentication, CLI, model catalog, and compatibility | `src/auth.ts`, `src/catalog.ts`, `src/claude-args.ts`, `src/compatibility.ts` | `auth.test.js`, `catalog.test.js`, `claude-args.test.js`, `compatibility.test.js` |
+| Extension startup, configured account instances, session lifetime, and session working directory | `extensions/index.ts` (manifest entry), `extensions/pi-claude-code-provider.ts`, `src/configured-instances.ts` (descriptor and root validation) | `extension.test.js` |
+| Authentication, identity fingerprinting, CLI, model catalog, and compatibility | `src/auth.ts`, `src/catalog.ts`, `src/claude-args.ts`, `src/compatibility.ts` | `auth.test.js`, `catalog.test.js`, `claude-args.test.js`, `compatibility.test.js` |
 | Transcript and provider lifecycle | `src/context-serializer.ts`, `src/provider.ts`, `src/stream-events.ts`, `src/claude-protocol.ts`, `src/jsonl.ts`, `src/output.ts`, `src/errors.ts`, `src/types.ts` | `context-serializer.test.js`, `provider.test.js`, `stream-events.test.js`, `claude-protocol.test.js`, `jsonl.test.js`, `errors.test.js` |
 | Runtime launch, process trees, and private state | `src/claude-process.ts`, `src/host-runtime.ts`, `src/process-utils.ts`, `src/runtime-directories.ts` | `process-utils.test.js`, `runtime-directories.test.js` |
 | Visible web search | `src/web-search.ts` | `web-search.test.js` |
@@ -34,7 +34,7 @@ pi install /absolute/path/to/pi-claude-code-provider
 | Paid and live validation | `src/paid-launch-budget.ts`, `scripts/paid-test-runner.js`, `scripts/live-test.js`, `scripts/model-matrix.js`, `scripts/lib/paid-stages.js`, `scripts/lib/paid-confirmation.js`, `scripts/lib/live-process.js`, `scripts/lib/model-matrix-policy.js`, `scripts/lib/pi-installation.js` | `paid-stages.test.js`, `paid-confirmation.test.js`, `paid-runner-lifecycle.test.js`, `live-process.test.js`, `model-matrix-policy.test.js`, `pi-installation.test.js` |
 | Repository policy and capture tooling | `scripts/check.js`, `scripts/typecheck.js`, `scripts/release-check.js`, `scripts/lib/dependency-policy.js`, `scripts/lib/documentation-policy.js`, `scripts/lib/source-policy.js`, `scripts/capture-claude-surface.js`, `scripts/capture-claude-breakpoints.js` | `dependency-policy.test.js`, `documentation-policy.test.js`, `source-policy.test.js`, `claude-fixture.test.js`, `node-fixture.test.js` |
 
-The manifest entry `extensions/index.ts` only re-exports the implementation. Keep the entry an `index.ts`: Pi's startup extension list appends any other entry's filename to the package name.
+The manifest entry `extensions/index.ts` preserves the default implementation and exports the configured-instance factory. Keep the entry an `index.ts`: Pi's startup extension list appends any other entry's filename to the package name.
 
 Pi remains authoritative for prepared context, branches, compaction, active tools, execution, provider handoff, and cancellation. Read the matching Pi checkout's contributor and provider documentation before changing those boundaries. Pi imports remain optional `*` peer dependencies and are not bundled.
 

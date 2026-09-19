@@ -11,6 +11,18 @@ This document owns the maintained architecture and security model. Code is autho
 5. External interfaces are capability-checked and mismatches fail closed.
 6. Private request state is removed before success is published.
 
+## Account instance binding
+
+The default extension preserves the ambient single-provider contract. The named instance factory is an explicit alternative for wrappers that need more than one official Claude Code subscription in one Pi session.
+
+Configured startup validates and snapshots the complete descriptor set at the exported initialization boundary before registering any Pi capability. Provider IDs and diagnostic labels are distinct bounded opaque tokens. Each configuration root must already name an existing absolute physical directory in canonical form. The lexical path and `realpath` must agree, so a root or ancestor symlink is rejected rather than silently rebound. Physical roots must be distinct. Validation failures identify only the affected labels; a duplicate physical root identifies every label in that colliding group. These checks prevent two labels from collapsing onto one credential store and prevent an apparently stable path from changing meaning through symlink resolution. A filesystem path can still be replaced after validation; eliminating that operating-system race would require handle-based process launch support that Node does not provide.
+
+Preflight launches only the official configured Claude executable with the instance's `CLAUDE_CONFIG_DIR` in the same allowlisted environment used by requests. It requires eligible first-party subscription authentication, then derives a versioned SHA-256 fingerprint from the transient `email` and `orgId` fields in `claude auth status`. Those fields are an undocumented CLI capability, not a credential-store contract. Missing fields, malformed expected hashes, and mismatches fail closed. Raw identities and expected hashes are not retained on the installation object or included in errors, metrics, provider metadata, or diagnostics.
+
+Each registered stream closes over its validated installation. Process launch applies that installation's root after caller-supplied environment values, so neither a request nor the shared web-search path can replace the binding. Rate-limit notices have session-scoped deduplication per installation and identify the opaque label; web search uses the first installation's notifier. Configured startup failures identify each failed label after all preflights settle. Configured doctor checks revalidate roots independently, report a root failure only under affected labels, and continue checking healthy roots. It aggregates bounded sections identified only by opaque label and omits process-wide request metrics rather than presenting them as account-specific. The file-report mode refuses configured instances because the existing report schema describes one installation; it never substitutes ambient authentication.
+
+Identity is verified at startup and on explicit doctor checks, not before every process in a tool round trip. A login changed while Pi remains open therefore requires a doctor check or `/reload` to establish the new identity state. Requests still remain bound to the configured root throughout that interval.
+
 ## Request and transcript transport
 
 `streamSimple(model, context, options)` receives Pi's prepared context and applies Pi's logical `before_provider_request` replacement when present. The provider does not parse session files or rebuild Pi state.
