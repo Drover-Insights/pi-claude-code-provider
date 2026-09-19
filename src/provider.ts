@@ -589,8 +589,8 @@ function timeoutSetting(name: string, fallback: number): number {
   const raw = process.env[name]?.trim();
   if (!raw) return fallback;
   const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new ClaudeCodeError("timeout_config", `${name} must be a positive integer number of milliseconds`);
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 2_147_483_647) {
+    throw new ClaudeCodeError("timeout_config", `${name} must be a positive integer number of milliseconds no greater than 2147483647`);
   }
   return value;
 }

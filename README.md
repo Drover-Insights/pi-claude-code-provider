@@ -87,9 +87,9 @@ Images remain available to Claude throughout the current Pi context, including a
 | `PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM` | Exact platform/architecture (for example `linux/arm64`) whose startup compatibility advisory you acknowledge and wish to hide. Unset by default. Does not mark the platform verified or hide doctor/report metadata, authentication errors, rate-limit notices, or runtime validation failures. |
 | `PI_CLAUDE_CODE_PROVIDER_PATH` | Override the `claude` executable path. |
 | `PI_CLAUDE_CODE_PROVIDER_METRICS_LOG` | Append content-free request and search metrics as JSONL. |
-| `PI_CLAUDE_CODE_PROVIDER_IDLE_TIMEOUT_MS` | Override the five-minute protocol-idle timeout with positive milliseconds. Provider requests only. |
-| `PI_CLAUDE_CODE_PROVIDER_TOTAL_TIMEOUT_MS` | Override the 30-minute total timeout with positive milliseconds. Provider requests only; web search keeps its own three-minute limit. |
-| `PI_CLAUDE_CODE_PROVIDER_MCP_READY_TIMEOUT_MS` | Override the five-second tool-catalog readiness timeout with positive milliseconds. |
+| `PI_CLAUDE_CODE_PROVIDER_IDLE_TIMEOUT_MS` | Override the five-minute protocol-idle timeout with a positive integer up to 2,147,483,647 milliseconds. Provider requests only. |
+| `PI_CLAUDE_CODE_PROVIDER_TOTAL_TIMEOUT_MS` | Override the 30-minute total timeout with a positive integer up to 2,147,483,647 milliseconds. Provider requests only; web search keeps its own three-minute limit. |
+| `PI_CLAUDE_CODE_PROVIDER_MCP_READY_TIMEOUT_MS` | Override the five-second tool-catalog readiness timeout with a positive integer up to 2,147,483,647 milliseconds. |
 | `PI_CLAUDE_CODE_PROVIDER_THINKING_DISPLAY` | `summarized` (default), `omitted`, or `off`. `omitted` hides thinking text, which reaches the first reply text sooner and keeps later requests smaller. `off` sends no display request at all; use it only if a Claude Code release rejects the option. |
 | `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT` | `on` (default) or `off`. `off` drops the provider's own prompt-cache breakpoint, which loses prompt caching; use it only when a Claude Code release fails requests for carrying too many cache breakpoints. |
 
@@ -100,6 +100,8 @@ Claude processes receive only an allowlisted environment. Besides locale, proxy,
 ## Security and troubleshooting
 
 Pi packages run with the user's permissions; review the source before installation and treat model-visible context like any other Claude Code prompt. Main requests suppress unmanaged user and project customizations and local tools, validate capabilities, and remove private request state before success. Claude runs in Pi's session working directory, so it sees the same project Pi's tools act on, and every file or shell action it proposes runs as a visible Pi tool call. Its startup Git status collection is disabled, so a project's configured Git filters do not run when it starts. It still runs read-only `git ls-files` and `git remote` probes and an `rg --files` count of the project at every launch, and reads the project's `.claude/settings*.json`; none of the project's customizations, hooks, or MCP servers take effect, and nothing is written to the project. Administrator-managed Claude Code settings, hooks, and MCP policy are organization-trusted and can take effect before validation; abrupt host termination can still leave state behind. See [DESIGN.md](DESIGN.md) for the security model and [SECURITY.md](SECURITY.md) for vulnerability reporting.
+
+For side requests whose session ID this extension did not register, the provider trusts the working directory in Pi's system prompt. Hosts using this provider through Pi-AI's side-request API must preserve Pi's trusted prompt construction; a caller-controlled prompt can select an existing working directory for an unknown session.
 
 - **Provider missing:** run the doctor, correct the reported problem, then run `/reload`.
 - **Authentication rejected:** run `claude auth status` and log in with an eligible first-party subscription. Logins made with `claude setup-token` through `CLAUDE_CODE_OAUTH_TOKEN` are not forwarded to Claude and are unsupported.

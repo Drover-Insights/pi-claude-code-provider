@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, writeFile } from "node:fs/promises";
+import { lstat, readFile, realpath, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeCodeError, errorCode } from "./errors.ts";
 import { createRuntimeDirectory, removeRuntimeDirectory } from "./runtime-directories.ts";
@@ -110,9 +111,23 @@ export class SessionImageStore {
   }
 
   private async ensureDirectory(): Promise<string> {
-    this.directoryPromise ??= createRuntimeDirectory("provider_image_store");
-    const directory = await this.directoryPromise;
-    this.directoryPath = directory;
-    return directory;
+    // The generated name cannot contain a quote. Check the physical root before
+    // creating a store so a rejected Claude @-reference leaves no session state.
+    this.directoryPromise ??= (async () => {
+      const root = await realpath(tmpdir());
+      if (root.includes('"')) {
+        throw new ClaudeCodeError("image_path", `Images cannot be attached from a temporary directory containing a double quote: ${root}; choose a temporary directory without one (TMPDIR, or TEMP on Windows)`);
+      }
+      return createRuntimeDirectory("provider_image_store", { temporaryRoot: root });
+    })();
+    const pending = this.directoryPromise;
+    try {
+      const directory = await pending;
+      this.directoryPath = directory;
+      return directory;
+    } catch (error) {
+      if (this.directoryPromise === pending) this.directoryPromise = undefined;
+      throw error;
+    }
   }
 }

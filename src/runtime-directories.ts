@@ -8,13 +8,14 @@ const MARKER_SCHEMA = "pi-claude-code-provider-runtime-v1";
 const MINIMUM_STALE_AGE_MS = 60 * 60_000;
 const MAX_DELETION_ATTEMPTS = 256;
 
-export type RuntimeDirectoryKind = "provider_request" | "provider_image_store" | "web_search_request" | "web_search_output";
+export type RuntimeDirectoryKind = "provider_request" | "provider_image_store" | "web_search_request" | "web_search_output" | "bridge_probe";
 
 const PREFIXES: Record<RuntimeDirectoryKind, string> = {
   provider_request: "pi-claude-code-provider-request-",
   provider_image_store: "pi-claude-code-provider-images-",
   web_search_request: "pi-claude-code-provider-search-",
   web_search_output: "pi-claude-code-provider-search-output-",
+  bridge_probe: "pi-claude-code-provider-bridge-probe-",
 };
 
 interface RuntimeMarker {

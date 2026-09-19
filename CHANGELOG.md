@@ -13,6 +13,9 @@
 
 ### Fixed
 
+- Session-backed image requests reject a quoted temporary path before creating or writing the image store; correcting the temporary root lets the same session attach images.
+- The doctor bridge probe requires a clean child exit and reports termination failures while retaining marked state when liveness is unknown.
+- Provider timeout settings above Node's maximum timer delay now fail before launch instead of silently becoming approximately 1 ms.
 - Failed process-tree cleanup now retains private request state and session images even when the Claude leader has already exited. POSIX stale recovery also checks the remaining process group before reclaiming that state.
 - Stale image recovery now inspects all package directories and limits deletion attempts separately, so more than 256 leftover image stores no longer prevent recovery from making progress.
 - Quitting Pi while a turn is running no longer waits for that turn to finish. Pi asks its extensions to shut down before it stops the turn, and waits for them, so this package's image-store cleanup was waiting for a request nothing had yet cancelled: `/quit`, Ctrl+D and a terminated Pi all hung until Claude finished answering or the request timed out. Shutdown now leaves the session's image directory to the request still writing to it, and that request removes it when it finishes.

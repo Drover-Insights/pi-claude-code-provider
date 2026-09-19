@@ -500,3 +500,37 @@ test("attaches images by absolute path under a temp root with spaces, and refuse
         await rm(fixture, { recursive: true, force: true });
     }
 });
+
+test("session image store rejects a quoted root before writing and recovers after the root changes", { skip: process.platform === "win32" }, async () => {
+    const fixture = await mkdtemp(join(tmpdir(), "pi-session-quoted-root-"));
+    const quoted = join(fixture, 'root"quoted');
+    const usable = join(fixture, "usable");
+    await mkdir(quoted);
+    await mkdir(usable);
+    const original = process.env.TMPDIR;
+    const store = new SessionImageStore();
+    store.open();
+    const lease = store.acquire();
+    const context = { messages: [{ role: "user", content: [{ type: "image", data: Buffer.from("png!").toString("base64"), mimeType: "image/png" }], timestamp: 1 }] };
+    try {
+        process.env.TMPDIR = quoted;
+        await assert.rejects(prepareRequestWithLimits(context, {}, usable, lease), (error) => error.code === "image_path");
+        assert.equal(lease.directory, undefined);
+        assert.deepEqual(await readdir(quoted), []);
+        process.env.TMPDIR = usable;
+        const prepared = await prepareRequestWithLimits(context, {}, usable, lease);
+        try {
+            assert.equal(prepared.attachmentPaths.length, 1);
+            assert.equal(prepared.imageStoreDirectory, lease.directory);
+            assert.deepEqual(await readFile(prepared.attachmentPaths[0]), Buffer.from("png!"));
+        } finally {
+            await rm(prepared.directory, { recursive: true, force: true });
+        }
+    } finally {
+        if (original === undefined) delete process.env.TMPDIR;
+        else process.env.TMPDIR = original;
+        lease.release();
+        await store.close();
+        await rm(fixture, { recursive: true, force: true });
+    }
+});

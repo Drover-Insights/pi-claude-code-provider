@@ -632,6 +632,44 @@ test("provider rejects invalid timeout configuration before spawning Claude", as
         await Promise.all([fake.dir, root].map((directory) => rm(directory, { recursive: true, force: true })));
     }
 });
+
+test("provider accepts Node's maximum timer delay and rejects the next millisecond before launch", async () => {
+    const root = await mkdtemp(join(tmpdir(), "provider-timeout-boundary-"));
+    const marker = join(root, "spawned");
+    const fake = await fakeClaude(`fs.writeFileSync(${JSON.stringify(marker)}, "spawned"); process.exit(0);`);
+    const names = [
+        "PI_CLAUDE_CODE_PROVIDER_TOTAL_TIMEOUT_MS",
+        "PI_CLAUDE_CODE_PROVIDER_IDLE_TIMEOUT_MS",
+        "PI_CLAUDE_CODE_PROVIDER_MCP_READY_TIMEOUT_MS",
+    ];
+    const original = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    const warnings = [];
+    const onWarning = (warning) => warnings.push(warning);
+    process.on("warning", onWarning);
+    try {
+        for (const name of names) process.env[name] = "2147483647";
+        await createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" })(model, context, { reasoning: "medium" }).result();
+        assert.equal(await readFile(marker, "utf8"), "spawned");
+        await rm(marker);
+        for (const name of names) {
+            process.env[name] = "2147483648";
+            const result = await createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" })(model, context, { reasoning: "medium" }).result();
+            assert.equal(result.stopReason, "error");
+            assert.match(result.errorMessage ?? "", /2147483647/);
+            await waitForRequestMetrics((entry) => entry.errorCategory === "timeout_config");
+            await assert.rejects(access(marker));
+            process.env[name] = "2147483647";
+        }
+        assert.equal(warnings.some((warning) => warning.name === "TimeoutOverflowWarning"), false);
+    } finally {
+        process.off("warning", onWarning);
+        for (const name of names) {
+            if (original[name] === undefined) delete process.env[name];
+            else process.env[name] = original[name];
+        }
+        await Promise.all([fake.dir, root].map((directory) => rm(directory, { recursive: true, force: true })));
+    }
+});
 test("provider rejects tool calls against its private transport directory", async () => {
     const fake = await fakeClaude(`
 process.on("SIGTERM", () => {

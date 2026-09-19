@@ -13,6 +13,8 @@ This document owns the maintained architecture and security model. Code is autho
 
 ## Request and transcript transport
 
+The session image store checks the physical temporary root before creating its directory. A rejected quoted path therefore writes no image and leaves the open store usable after the temporary root is corrected.
+
 `streamSimple(model, context, options)` receives Pi's prepared context and applies Pi's logical `before_provider_request` replacement when present. The provider does not parse session files or rebuild Pi state.
 
 That same function is registered twice, with Pi and with Pi-AI's API registry. Pi's own `registerProvider` populates its model runtime, which serves the user's turns; Pi-AI's own `completeSimple` and `streamSimple` resolve the model's api in Pi-AI's registry instead, and Pi's provider composer falls back to that registry as a last resort, so a miss there throws into a loop Pi does not await, which ends the process. Such a call is an ordinary request here, because nothing is stateful about it: the caller's system prompt and tools are transported like any other, and the calling extension, not Claude, runs anything the model proposes. The registration is shared by every instance in the process and is withdrawn only when no session is left to serve, and each session start re-asserts it, because a reload anywhere in the process clears that registry for everyone. It is also best effort: Pi-AI declares the entrypoint that carries the registry temporary, so the module is loaded rather than imported and its absence costs only these side requests. Importing it would make its removal a failure to load the extension at all, before any notice could report why.
@@ -62,6 +64,10 @@ The Claude child runs in `dontAsk` mode with local tools disabled. A proposal-on
 Unknown tools, malformed arguments, execution attempts, private transport paths, unexpected exits, caller cancellation, and cleanup failures fail the request.
 
 ## Process and storage lifecycle
+
+The doctor's proposal-bridge probe uses a marked private directory and records its child PID. A valid handshake is healthy only after a clean exit and confirmed tree cleanup. If termination fails, doctor reports unknown liveness and retains the directory. POSIX stale recovery reclaims it once the owner and child tree are gone; Windows requires manual cleanup, as for other retained runtime state.
+
+For an unknown session, prompt-derived working directory resolution trusts Pi to construct the system prompt. This is an integration contract, not an authorization check on arbitrary caller text: a host using Pi-AI's side-request registration must supply a Pi-authored prompt, or a caller could name another existing directory. Known sessions remain bound to their registered directory.
 
 On POSIX, Claude runs as a detached process-group leader and cleanup targets the group. On Windows, Claude is a hidden, non-detached child and forced cleanup invokes `%SystemRoot%\System32\taskkill.exe /PID <owned-pid> /T /F`. The PID comes only from the retained request child; the provider never terminates by image name or process enumeration.
 

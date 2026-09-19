@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -7,6 +7,9 @@ import { platformStatus, versionStatus } from "../../src/compatibility.ts";
 import { writeDiagnosticReport } from "../../src/diagnostics.ts";
 import { bridgeArgv, formatBridgeArgv } from "../../src/claude-args.ts";
 import { formatDoctorSummary, probeBridge } from "../../src/doctor.ts";
+import { EventEmitter } from "node:events";
+import { writeFileSync } from "node:fs";
+import { cleanupStaleRuntimeDirectories } from "../../src/runtime-directories.ts";
 import { ClaudeCodeError } from "../../src/errors.ts";
 import { appendRequestMetrics, appendSearchMetrics, flushMetricsLog, getLastRequestMetrics, getMetricsLogError, recordRequestMetrics, recordSearchMetrics, serializeRequestMetrics, serializeSearchMetrics } from "../../src/metrics.ts";
 import { CAPTURED_CLAUDE_VERSION } from "../support/claude-fixture.js";
@@ -260,6 +263,76 @@ test("the doctor completes a real bridge handshake under the hosting runtime", a
         bridgeProbe: { ok: false, argv: probe.argv, detail: "handshake failed (no tools/list result, ready marker missing)" },
     });
     assert.match(broken, /^Bridge: BROKEN via .*ready marker missing\)\)$/m);
+});
+
+function fakeProbe(root, { code = 0, waitError, terminationError } = {}) {
+    return {
+        temporaryRoot: root,
+        spawnChild(_command, _args, options) {
+            const stdout = new EventEmitter();
+            return {
+                pid: 424242,
+                stdout,
+                stderr: new EventEmitter(),
+                stdin: {
+                    end() {
+                        stdout.emit("data", Buffer.from('{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"probe"}]}}\n'));
+                        writeFileSync(options.env.PI_CLAUDE_TOOL_READY, "ready");
+                    },
+                },
+            };
+        },
+        supervise(_child, options) {
+            return {
+                touch() {},
+                dispose() {},
+                async wait() {
+                    if (waitError) {
+                        options.onFailure(waitError);
+                        throw waitError;
+                    }
+                    return { code, signal: null };
+                },
+                async terminate() {
+                    if (terminationError) throw terminationError;
+                },
+            };
+        },
+    };
+}
+
+test("doctor rejects nonzero bridge exit and timeout even after a valid handshake", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-doctor-failures-"));
+    try {
+        const nonzero = await probeBridge(1000, fakeProbe(root, { code: 7 }));
+        assert.equal(nonzero.ok, false);
+        assert.match(nonzero.detail, /exit code 7/);
+        const timeout = await probeBridge(1000, fakeProbe(root, { waitError: new Error("probe timed out") }));
+        assert.equal(timeout.ok, false);
+        assert.match(timeout.detail, /probe timed out/);
+        assert.deepEqual(await readdir(root), []);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test("doctor reports uncertain termination and retains marked state until stale recovery proves the child gone", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-doctor-retained-"));
+    try {
+        const probe = await probeBridge(1000, fakeProbe(root, { terminationError: new Error("synthetic EPERM") }));
+        assert.equal(probe.ok, false);
+        assert.match(probe.detail, /cleanup failed; liveness unknown/);
+        const [name] = await readdir(root);
+        assert.match(name, /^pi-claude-code-provider-bridge-probe-/);
+        const directory = join(root, name);
+        const marker = JSON.parse(await readFile(join(directory, ".pi-claude-code-provider-runtime.json"), "utf8"));
+        assert.equal(marker.childPid, 424242);
+        const options = { temporaryRoot: root, currentUid: (await stat(root)).uid, minimumAgeMs: 0, now: Date.now() + 1000 };
+        assert.deepEqual(await cleanupStaleRuntimeDirectories({ ...options, processAlive: (pid) => pid === -424242 }), { removed: 0, failures: 0 });
+        assert.deepEqual(await cleanupStaleRuntimeDirectories({ ...options, processAlive: () => false }), { removed: 1, failures: 0 });
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
 });
 
 test("the diagnostic report records the distribution that decides bridge launching", async () => {
