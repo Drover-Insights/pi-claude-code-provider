@@ -327,6 +327,53 @@ test("provider settles once and retains marked state when process death is unkno
         await rm(fake.dir, { recursive: true, force: true });
     }
 });
+
+test("provider retains request and session images when tree cleanup fails after leader exit", { skip: process.platform === "win32", timeout: 5000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), "provider-exited-leader-"));
+    const originalTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = root;
+    const store = new SessionImageStore();
+    store.open();
+    const fake = await fakeClaude(`
+process.stdin.resume();
+process.stdin.on("end", () => {
+  const descendant = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {stdio:"ignore"});
+  descendant.unref();
+  process.stdout.write(JSON.stringify(${JSON.stringify(init)}) + "\\n");
+  process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"must not succeed",usage:{}}) + "\\n");
+});`);
+    let child;
+    try {
+        const stream = createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" }, {
+            resolveSession: () => ({ cwd: root, imageStore: store }),
+            supervise: (running, options) => {
+                child = running;
+                return superviseProcess(running, { ...options, terminate: async () => {
+                    assert.equal(running.exitCode, 0);
+                    assert.doesNotThrow(() => process.kill(-running.pid, 0));
+                    throw new Error("synthetic surviving-group failure");
+                } });
+            },
+        })(model, { messages: [{ role: "user", content: [{ type: "image", data: "AA==", mimeType: "image/png" }], timestamp: 1 }] });
+        const result = await stream.result();
+        assert.equal(result.stopReason, "error");
+        assert.match(result.errorMessage, /synthetic surviving-group failure/);
+        assert.match(result.errorMessage, /runtime state was retained/);
+        const metrics = await waitForRequestMetrics((entry) => entry.errorCategory === "process_cleanup");
+        assert.equal(metrics.cleanupComplete, false);
+        await store.close();
+        const entries = await readdir(root);
+        assert.equal(entries.filter((name) => name.startsWith("pi-claude-code-provider-request-")).length, 1);
+        const images = entries.filter((name) => name.startsWith("pi-claude-code-provider-images-"));
+        assert.equal(images.length, 1);
+        assert.equal((await readdir(join(root, images[0]))).filter((name) => name.endsWith(".png")).length, 1);
+    } finally {
+        if (child) await terminateProcessGroup(child);
+        await store.close();
+        if (originalTmpdir === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = originalTmpdir;
+        await rm(root, { recursive: true, force: true });
+    }
+});
 test("provider runs Claude in the session directory and commits success only after private-state cleanup", async () => {
     const sessionDirectory = await mkdtemp(join(tmpdir(), "provider-session-directory-"));
     const fake = await fakeClaude(`
