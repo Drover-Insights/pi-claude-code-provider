@@ -7,6 +7,7 @@ package-lock.json
 /bridges/
 /IMPROVE.md
 /REVIEW.md
+/AGENTS.md
 .env
 .env.*
 !.env.example
