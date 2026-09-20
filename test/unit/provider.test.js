@@ -159,6 +159,170 @@ setTimeout(() => {
         await rm(fake.dir, { recursive: true, force: true });
     }
 });
+test("provider preserves Pi 0.86 transcript system instructions", async () => {
+    const fake = await fakeClaude(`
+const path = require("node:path");
+const privateDirectory = path.dirname(process.argv[process.argv.indexOf("--system-prompt-file") + 1]);
+fs.writeFileSync(path.join(__dirname, "captured-system-prompt"), fs.readFileSync(path.join(privateDirectory, "system-prompt.txt"), "utf8"));
+process.stdout.write(JSON.stringify(${JSON.stringify(init)}) + "\\n");
+process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_start",message:{id:"msg_fake",model:"claude-sonnet-5",usage:{input_tokens:0,output_tokens:0}}}}) + "\\n");
+process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_start",index:0,content_block:{type:"text",text:""}}}) + "\\n");
+process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_delta",index:0,delta:{type:"text_delta",text:"fake ok"}}}) + "\\n");
+process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_stop",index:0}}) + "\\n");
+process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"fake ok",usage:{input_tokens:4,output_tokens:2}}) + "\\n");`);
+    const pi086Context = {
+        messages: [
+            {
+                role: "system",
+                content: "Base Pi instructions",
+                sections: { advisor: "Advisor-specific instructions" },
+                timestamp: 1,
+            },
+            { role: "user", content: "hello", timestamp: 2 },
+        ],
+    };
+    try {
+        const stream = createClaudeStream(
+            { executable: fake.executable, version: CAPTURED_CLAUDE_VERSION, subscriptionType: "pro" },
+        )(model, pi086Context, { reasoning: "medium" });
+        const result = await stream.result();
+        assert.equal(result.stopReason, "stop", result.errorMessage);
+        assert.equal(
+            await readFile(join(fake.dir, "captured-system-prompt"), "utf8"),
+            "Base Pi instructions\n\nAdvisor-specific instructions",
+        );
+    }
+    finally {
+        await rm(fake.dir, { recursive: true, force: true });
+    }
+});
+test("provider applies logical payload replacements to a Pi 0.86 transcript", async () => {
+    const fake = await fakeClaude(`
+const path = require("node:path");
+const privateDirectory = path.dirname(process.argv[process.argv.indexOf("--system-prompt-file") + 1]);
+const catalog = JSON.parse(fs.readFileSync(path.join(privateDirectory, "tools.json"), "utf8"));
+fs.writeFileSync(path.join(__dirname, "captured-payload-replacement"), JSON.stringify({
+  systemPrompt: fs.readFileSync(path.join(privateDirectory, "system-prompt.txt"), "utf8"),
+  catalog,
+}));
+process.stdout.write(JSON.stringify({
+  ...${JSON.stringify(init)},
+  tools: catalog.map((tool) => \`mcp__pi__\${tool.name}\`),
+  mcp_servers: [{ name: "pi", status: "connected" }],
+}) + "\\n");
+process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_start",message:{id:"msg_fake",model:"claude-sonnet-5",usage:{input_tokens:0,output_tokens:0}}}}) + "\\n");
+process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_start",index:0,content_block:{type:"text",text:""}}}) + "\\n");
+process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_delta",index:0,delta:{type:"text_delta",text:"fake ok"}}}) + "\\n");
+process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_stop",index:0}}) + "\\n");
+process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"fake ok",usage:{input_tokens:4,output_tokens:2}}) + "\\n");
+setTimeout(() => {}, 50);`);
+    const originalTool = { name: "original", description: "original tool", parameters: { type: "object", properties: {} } };
+    const replacementTool = { name: "replacement", description: "replacement tool", parameters: { type: "object", properties: {} } };
+    const pi086Context = {
+        messages: [
+            {
+                role: "system",
+                content: "Original system prompt",
+                toolsAdded: [originalTool],
+                timestamp: 1,
+            },
+            { role: "user", content: "hello", timestamp: 2 },
+        ],
+    };
+    try {
+        const stream = createClaudeStream(
+            { executable: fake.executable, version: CAPTURED_CLAUDE_VERSION, subscriptionType: "pro" },
+        )(
+            model,
+            pi086Context,
+            {
+                reasoning: "medium",
+                onPayload: (payload) => ({
+                    ...payload,
+                    systemPrompt: "Replacement system prompt",
+                    tools: [replacementTool],
+                }),
+            },
+        );
+        const result = await stream.result();
+        assert.equal(result.stopReason, "stop", result.errorMessage);
+        const captured = JSON.parse(await readFile(join(fake.dir, "captured-payload-replacement"), "utf8"));
+        assert.equal(captured.systemPrompt, "Replacement system prompt");
+        assert.deepEqual(captured.catalog, [{
+            name: replacementTool.name,
+            description: replacementTool.description,
+            inputSchema: replacementTool.parameters,
+        }]);
+    }
+    finally {
+        await rm(fake.dir, { recursive: true, force: true });
+    }
+});
+test("provider replays Pi 0.86 system and tool updates for a transport without mid-conversation support", async () => {
+    const expectedInit = {
+        ...init,
+        tools: ["mcp__pi__second"],
+        mcp_servers: [{ name: "pi", status: "connected" }],
+    };
+    const fake = await fakeClaude(`
+const path = require("node:path");
+const privateDirectory = path.dirname(process.argv[process.argv.indexOf("--system-prompt-file") + 1]);
+const request = JSON.parse(fs.readFileSync(0, "utf8").trim());
+const records = request.message.content.map((block) => JSON.parse(block.text));
+fs.writeFileSync(path.join(__dirname, "captured-system-state"), JSON.stringify({
+  systemPrompt: fs.readFileSync(path.join(privateDirectory, "system-prompt.txt"), "utf8"),
+  catalog: JSON.parse(fs.readFileSync(path.join(privateDirectory, "tools.json"), "utf8")),
+  userMessages: records.filter((record) => record.role === "user").map((record) => record.content),
+}));
+process.stdout.write(JSON.stringify(${JSON.stringify(expectedInit)}) + "\\n");
+process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_start",message:{id:"msg_fake",model:"claude-sonnet-5",usage:{input_tokens:0,output_tokens:0}}}}) + "\\n");
+process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_start",index:0,content_block:{type:"text",text:""}}}) + "\\n");
+process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_delta",index:0,delta:{type:"text_delta",text:"fake ok"}}}) + "\\n");
+process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_stop",index:0}}) + "\\n");
+process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"fake ok",usage:{input_tokens:4,output_tokens:2}}) + "\\n");
+setTimeout(() => {}, 50);`);
+    const firstTool = { name: "first", description: "first tool", parameters: { type: "object", properties: {} } };
+    const secondTool = { name: "second", description: "second tool", parameters: { type: "object", properties: {} } };
+    const pi086Context = {
+        messages: [
+            {
+                role: "system",
+                content: "Base Pi instructions",
+                sections: { policy: "Initial policy" },
+                toolsAdded: [firstTool],
+                timestamp: 1,
+            },
+            { role: "user", content: "first request", timestamp: 2 },
+            {
+                role: "system",
+                content: "Later instructions",
+                sections: { policy: "Updated policy" },
+                toolsAdded: [secondTool],
+                toolsRemoved: [{ name: firstTool.name }],
+                timestamp: 3,
+            },
+            { role: "user", content: "second request", timestamp: 4 },
+        ],
+    };
+    try {
+        const stream = createClaudeStream(
+            { executable: fake.executable, version: CAPTURED_CLAUDE_VERSION, subscriptionType: "pro" },
+        )(model, pi086Context, { reasoning: "medium" });
+        const result = await stream.result();
+        assert.equal(result.stopReason, "stop", result.errorMessage);
+        const captured = JSON.parse(await readFile(join(fake.dir, "captured-system-state"), "utf8"));
+        assert.equal(captured.systemPrompt, "Base Pi instructions\n\nLater instructions\n\nUpdated policy");
+        assert.deepEqual(captured.catalog, [{
+            name: secondTool.name,
+            description: secondTool.description,
+            inputSchema: secondTool.parameters,
+        }]);
+        assert.deepEqual(captured.userMessages, ["first request", "second request"]);
+    }
+    finally {
+        await rm(fake.dir, { recursive: true, force: true });
+    }
+});
 test("provider rejects malformed logical payloads before claim or spawn", async () => {
     const root = await mkdtemp(join(tmpdir(), "provider-payload-invalid-"));
     const marker = join(root, "spawned");
