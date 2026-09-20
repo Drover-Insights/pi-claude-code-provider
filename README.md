@@ -68,7 +68,7 @@ The package also registers `pi_claude_code_provider_web_search`, a visible Pi to
 
 ### Isolated account instances
 
-The default extension remains a single provider named `pi-claude-code-provider` and uses the ambient Claude configuration. A wrapper extension can instead register explicitly named account instances:
+With no account-pool configuration, the default extension remains a single provider named `pi-claude-code-provider` and uses the ambient Claude configuration. A wrapper extension can register explicitly named account instances:
 
 ```ts
 import { createPiClaudeCodeProvider } from "pi-claude-code-provider/extensions/index.ts";
@@ -96,7 +96,9 @@ export default createPiClaudeCodeProvider({
 });
 ```
 
-Load the wrapper instead of the package's default manifest entry. Provider IDs and labels are distinct lowercase opaque labels, not emails, account IDs, or display names. Configuration roots must be existing absolute physical directories in canonical form. Relative paths, missing directories, duplicate roots, and any root or ancestor symlink fail before the extension registers anything.
+Alternatively, set `PI_CLAUDE_CODE_PROVIDER_CONFIG` to a private JSON file containing the same `instances` and `failover` object. The package's default manifest entry then loads that account pool directly. The file path must be absolute and canonical; the file and its ancestors must not be symlinks, and on POSIX it must be owned by the current user with mode `0600`. The file is limited to 64 KiB, must be valid UTF-8 JSON, and rejects unknown fields. Configuration errors never include the private file path. The variable is consumed by the provider process and is not forwarded to Claude Code.
+
+Provider IDs and labels are distinct lowercase opaque labels, not emails, account IDs, or display names. Configuration roots must be existing absolute physical directories in canonical form. Relative paths, missing directories, duplicate roots, and any root or ancestor symlink fail before the extension registers anything.
 
 Configured instances require `email` and `orgId` from `claude auth status`. These are undocumented Claude Code fields, so their presence is capability-checked and missing fields fail closed. The version 1 fingerprint is SHA-256 over this exact UTF-8 text, with the email trimmed and lowercased and the organization ID trimmed:
 
@@ -132,6 +134,7 @@ Images remain available to Claude throughout the current Pi context, including a
 | --- | --- |
 | `PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM` | Exact platform/architecture (for example `linux/arm64`) whose startup compatibility advisory you acknowledge and wish to hide. Unset by default. Does not mark the platform verified or hide doctor/report metadata, authentication errors, rate-limit notices, or runtime validation failures. |
 | `PI_CLAUDE_CODE_PROVIDER_PATH` | Override the `claude` executable path. |
+| `PI_CLAUDE_CODE_PROVIDER_CONFIG` | Absolute canonical path to a private mode-`0600` configured-instance and failover JSON file loaded by the default package extension. It is not forwarded to Claude Code. |
 | `PI_CLAUDE_CODE_PROVIDER_METRICS_LOG` | Append content-free request and search metrics as JSONL. |
 | `PI_CLAUDE_CODE_PROVIDER_IDLE_TIMEOUT_MS` | Override the five-minute protocol-idle timeout with positive milliseconds. |
 | `PI_CLAUDE_CODE_PROVIDER_TOTAL_TIMEOUT_MS` | Override the 30-minute total timeout with positive milliseconds. |

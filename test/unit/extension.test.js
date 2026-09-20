@@ -126,6 +126,199 @@ else {
     return { directory, executable };
 }
 
+test("the default package extension loads an ordered account pool from its private configuration file", async () => {
+    const [primaryRoot, secondaryRoot, configurationDirectory] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-")),
+    ]);
+    const configurationPath = join(configurationDirectory, "instances.json");
+    const { directory, executable } = await createFakeClaude("ok", {
+        configRootAuth: configuredAuthByRoot(primaryRoot, secondaryRoot),
+    });
+    const originalExecutable = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    const originalConfiguration = process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = configurationPath;
+    await writeFile(configurationPath, JSON.stringify({
+        instances: configuredInstances(primaryRoot, secondaryRoot),
+        failover: {
+            providerId: "claude-auto",
+            label: "automatic",
+            order: ["claude-primary", "claude-secondary"],
+        },
+    }), { mode: 0o600 });
+    try {
+        const pi = fakePi();
+
+        await implementation(pi.api);
+
+        assert.deepEqual([...pi.providers.keys()], ["claude-primary", "claude-secondary", "claude-auto"]);
+    } finally {
+        if (originalExecutable === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = originalExecutable;
+        if (originalConfiguration === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = originalConfiguration;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(configurationDirectory, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("the default package extension preserves ambient single-account behavior when private configuration is unset", async () => {
+    const { directory, executable } = await createFakeClaude();
+    const originalExecutable = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    const originalConfiguration = process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    delete process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+    try {
+        const pi = fakePi();
+
+        await implementation(pi.api);
+
+        assert.deepEqual([...pi.providers.keys()], ["pi-claude-code-provider"]);
+    } finally {
+        if (originalExecutable === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = originalExecutable;
+        if (originalConfiguration === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = originalConfiguration;
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("the default package extension rejects a non-private configuration file without disclosing its path", { skip: process.platform === "win32" }, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-"));
+    const configurationPath = join(directory, "instances.json");
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+    process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = configurationPath;
+    await writeFile(configurationPath, JSON.stringify({ instances: [] }), { mode: 0o644 });
+    try {
+        const pi = fakePi();
+
+        await assert.rejects(implementation(pi.api), error => {
+            assert.match(error.message, /mode 0600/i);
+            assert.doesNotMatch(error.message, new RegExp(configurationPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+            return true;
+        });
+        assert.equal(pi.providers.size, 0);
+        assert.equal(pi.commands.size, 0);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = original;
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("the default package extension rejects a symlinked configuration file without disclosing its path", { skip: process.platform === "win32" }, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-"));
+    const targetPath = join(directory, "private.json");
+    const configurationPath = join(directory, "instances.json");
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+    process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = configurationPath;
+    await writeFile(targetPath, JSON.stringify({ instances: [] }), { mode: 0o600 });
+    await symlink(targetPath, configurationPath);
+    try {
+        const pi = fakePi();
+
+        await assert.rejects(implementation(pi.api), error => {
+            assert.match(error.message, /symlink/i);
+            assert.doesNotMatch(error.message, new RegExp(configurationPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+            return true;
+        });
+        assert.equal(pi.providers.size, 0);
+        assert.equal(pi.commands.size, 0);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = original;
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("the default package extension rejects unknown private configuration fields", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-"));
+    const configurationPath = join(directory, "instances.json");
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+    process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = configurationPath;
+    await writeFile(configurationPath, JSON.stringify({ instances: [], unexpected: "value" }), { mode: 0o600 });
+    try {
+        const pi = fakePi();
+
+        await assert.rejects(implementation(pi.api), /unknown field/i);
+        assert.equal(pi.providers.size, 0);
+        assert.equal(pi.commands.size, 0);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = original;
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("the default package extension allowlists instance and failover descriptor fields", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-"));
+    const configurationPath = join(directory, "instances.json");
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+    process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = configurationPath;
+    const cases = [
+        { instances: [{ unexpected: "value" }] },
+        { instances: [], failover: { unexpected: "value" } },
+    ];
+    try {
+        for (const configuration of cases) {
+            await writeFile(configurationPath, JSON.stringify(configuration), { mode: 0o600 });
+            const pi = fakePi();
+
+            await assert.rejects(implementation(pi.api), /unknown field/i);
+            assert.equal(pi.providers.size, 0);
+            assert.equal(pi.commands.size, 0);
+        }
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = original;
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("the default package extension rejects an oversized private configuration file", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-"));
+    const configurationPath = join(directory, "instances.json");
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+    process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = configurationPath;
+    await writeFile(configurationPath, `${" ".repeat(64 * 1024)}{\"instances\":[]}`, { mode: 0o600 });
+    try {
+        const pi = fakePi();
+
+        await assert.rejects(implementation(pi.api), /too large/i);
+        assert.equal(pi.providers.size, 0);
+        assert.equal(pi.commands.size, 0);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = original;
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("the default package extension rejects a private configuration file that is not UTF-8", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-"));
+    const configurationPath = join(directory, "instances.json");
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+    process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = configurationPath;
+    await writeFile(configurationPath, Buffer.from([0xff]), { mode: 0o600 });
+    try {
+        const pi = fakePi();
+
+        await assert.rejects(implementation(pi.api), /valid UTF-8/i);
+        assert.equal(pi.providers.size, 0);
+        assert.equal(pi.commands.size, 0);
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = original;
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
 test("account-specific providers reject duplicate canonical Claude configuration roots before registration", async () => {
     const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-account-root-"));
     try {

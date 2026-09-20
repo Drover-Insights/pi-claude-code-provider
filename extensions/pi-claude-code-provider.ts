@@ -8,6 +8,7 @@ import { inspectClaudeInstallation } from "../src/auth.ts";
 import { providerModelsForSubscription } from "../src/catalog.ts";
 import { bridgeArgv } from "../src/claude-args.ts";
 import { readClaudeModelAliases } from "../src/claude-models.ts";
+import { readConfiguredProviderFile } from "../src/configured-instance-file.ts";
 import {
   validateConfigurationRoots,
   validateFailoverDescriptor,
@@ -36,9 +37,13 @@ const MAX_TRACKED_RATE_LIMIT_NOTICES = 64;
 const MAX_CONFIGURED_DOCTOR_OUTPUT = 16 * 1024;
 const MAX_CONFIGURED_DOCTOR_SECTION = 4 * 1024;
 const MAX_CONFIGURED_DOCTOR_LABEL = 128;
+const CONFIGURATION_FILE_ENVIRONMENT_VARIABLE = "PI_CLAUDE_CODE_PROVIDER_CONFIG";
 
-export default function piClaudeCodeProvider(pi: ExtensionAPI): Promise<void> {
-  return initializePiClaudeCodeProvider(pi);
+export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<void> {
+  const configurationPath = process.env[CONFIGURATION_FILE_ENVIRONMENT_VARIABLE];
+  if (configurationPath === undefined) return initializePiClaudeCodeProvider(pi);
+  const configuration = await readConfiguredProviderFile(configurationPath);
+  return initializePiClaudeCodeProvider(pi, configuration.instances, configuration.failover);
 }
 
 export async function initializePiClaudeCodeProvider(

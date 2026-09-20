@@ -65,7 +65,13 @@ test("verifies a versioned non-secret account identity fingerprint without retur
     }
 });
 test("builds an allowlisted Claude environment", () => {
-    const forbidden = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "AWS_ACCESS_KEY_ID", "CLAUDE_CODE_OAUTH_TOKEN"];
+    const forbidden = [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "AWS_ACCESS_KEY_ID",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "PI_CLAUDE_CODE_PROVIDER_CONFIG",
+    ];
     const originals = Object.fromEntries(forbidden.map((name) => [name, process.env[name]]));
     for (const name of forbidden)
         process.env[name] = "secret";
