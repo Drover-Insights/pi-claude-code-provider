@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-20
+
 ### Changed
 
 - **Breaking.** Pi 0.86.1 is now the minimum supported version; upgrade Pi before this package. Older versions can still load, but are unsupported and flagged by the doctor. Pi 0.85.1 is no longer tested.
