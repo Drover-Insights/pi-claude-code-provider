@@ -45,7 +45,7 @@ Two contracts are easy to break silently:
 
 ## Compatibility baseline
 
-`src/compatibility.ts` owns Pi/Claude version, platform, and expected model-family values; `.github/workflows/ci.yml` owns the Node CI matrix and the Pi version CI installs. These two files and the baseline table below move together in one reviewed commit, and only after the paid release gate has passed on the build they name: during development, as [Updating compatibility](#updating-compatibility) describes, or in the release commit. The release gate runs again against the release commit and nothing is published unless it passes, so a baseline advanced during development is still proven against exactly what ships. Never advance them to a version the gate did not exercise.
+`src/compatibility.ts` owns Pi/Claude version, platform, and expected model-family values; `.github/workflows/ci.yml` owns the Node CI matrix and the Pi version CI installs. These two files and the baseline table below move together in one reviewed commit, whether during development, as [Updating compatibility](#updating-compatibility) describes, or in the release commit. Never advance them to a version the paid release gate did not exercise: the gate runs again against the release commit and nothing is published unless it passes, so a baseline advanced during development is still proven against exactly what ships.
 
 `MINIMUM_VERSIONS` in the same file is a separate frozen constant, stated in `README.md` and reported by the doctor, and is deliberately not derived from `VERIFIED_VERSIONS`. The baseline rises whenever a gate passes; the minimum moves only by an explicit decision to change what is supported. Deriving one from the other would drop support for working installs as a side effect of a baseline bump. Assert nothing about their relative order.
 
@@ -167,28 +167,29 @@ When updating Claude Code compatibility:
 2. Recapture the help surface with `npm run capture:claude-surface` and re-pin `CAPTURED_CLAUDE_VERSION`.
 3. Run `npm run capture:claude-breakpoints` for `sonnet` and `haiku`, and continue only on HEALTHY verdicts.
 4. Cover readiness, invalid or oversized JSONL, timeouts, aborts, error exits, and descendant cleanup deterministically.
-5. Run the full paid release gate on the new build, with explicit quota authorization.
-6. Only then move `src/compatibility.ts`, CI, and the baseline table together.
+5. Move `src/compatibility.ts`, CI, and the baseline table together, under the rule in [Compatibility baseline](#compatibility-baseline).
 
 When updating Pi compatibility, read the current package, extension, provider, session, and compaction contracts, then test a clean Git or packed installation on both the npm and standalone distributions.
 
-## Release procedure
+## Release policy
 
-1. Confirm the worktree is clean and the npm name and metadata are correct.
-2. Promote `[Unreleased]` in `CHANGELOG.md` to a dated version entry.
-3. Run `npm run release:check` and inspect `npm pack --dry-run`.
-4. Install the tarball in a fresh temporary directory and list its models with Pi.
-5. If the Claude Code version under test changed since the last release, run `npm run capture:claude-breakpoints` for `sonnet` and `haiku` and require HEALTHY verdicts. If runtime code changed, run the explicitly authorized paid release gate.
-6. Run `npm publish --dry-run` and inspect the exact inventory.
-7. Publish, tag, and create the GitHub release only with maintainer authorization.
+Releases are prepared and published by the maintainer against a checklist kept
+outside this repository. The steps there change between releases; what follows
+are the rules a release must satisfy regardless of how it is carried out.
 
-This repository contains no automatic publishing workflow.
+- A release ships one reviewed commit, with `[Unreleased]` in `CHANGELOG.md` promoted to a dated version entry and the package version matching the tag. When a release removes or changes documented behaviour, its changelog entry leads with that change and its migration note.
+- `npm run release:check` and `npm publish --dry-run` must both pass, and the packed inventory is read rather than inferred from an exit status. The published file list is checked against the previous release, and every difference must trace to a reviewed change.
+- The packed tarball is verified on **both** Pi distributions, npm and standalone. The extension must load under Node and under the compiled Bun binary; exercising one lane leaves the other unproven.
+- When runtime code changed, the explicitly authorized paid release gate must pass against the exact commit that ships. A gate run against an earlier commit proves that commit, not this one.
+- When the Claude Code build under test changed, `npm run capture:claude-breakpoints` must return HEALTHY verdicts for `sonnet` and `haiku` before any quota is spent on the gate.
+- Publishing, tagging, and creating the GitHub release are manual and maintainer-authorized. This repository contains no automatic publishing workflow and stores no publishing credential.
+- Published npm versions and release tags are immutable. Correct a bad release by deprecating it and shipping a higher version, never by unpublishing or overwriting.
 
 ## Documentation and Git hygiene
 
 - `README.md` owns installation, usage, configuration, material limitations, and troubleshooting.
 - `DESIGN.md` owns architecture and security design.
-- `DEVELOPING.md` owns setup, validation, compatibility, and release procedures.
+- `DEVELOPING.md` owns setup, validation, compatibility, and release policy.
 - `CONTRIBUTING.md` owns contribution requirements.
 - `SECURITY.md` owns vulnerability reporting.
 - `CHANGELOG.md` owns user-visible release history.
