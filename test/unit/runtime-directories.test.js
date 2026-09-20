@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { access, lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test from "node:test";
 import {
   cleanupStaleRuntimeDirectories,
@@ -138,7 +138,7 @@ test("drains stale images beyond the deletion budget without counting retained e
     await writeFile(markerPath, JSON.stringify({ ...marker, ownerPid: 602 }));
     const options = { temporaryRoot: root, currentUid: (await lstat(root)).uid, now, maxDeletionAttempts: 1, processAlive: (pid) => pid === 602 };
     for (let i = 0; i < 3; i++) assert.deepEqual(await cleanupStaleRuntimeDirectories(options), { removed: 1, failures: 0 });
-    assert.deepEqual(await readdir(root), [images[0].slice(root.length + 1)]);
+    assert.deepEqual(await readdir(root), [basename(images[0])]);
     assert.deepEqual(await cleanupStaleRuntimeDirectories(options), { removed: 0, failures: 0 });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -169,7 +169,7 @@ test("failed deletions consume the budget and incomplete ownership inspection re
     assert.deepEqual(await cleanupStaleRuntimeDirectories({ ...options, maxDeletionAttempts: 1, removeDirectory: async () => { attempts++; throw new Error("synthetic removal failure"); } }), { removed: 0, failures: 1 });
     assert.equal(attempts, 1);
     assert.deepEqual(await cleanupStaleRuntimeDirectories({ ...options, inspectDirectory: async (path) => {
-      if (path === request) throw new Error("synthetic inspection failure");
+      if (basename(path) === basename(request)) throw new Error("synthetic inspection failure");
       return lstat(path);
     } }), { removed: 0, failures: 1 });
     await Promise.all([images, request].map((path) => access(path)));
