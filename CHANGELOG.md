@@ -15,8 +15,9 @@
 
 ### Fixed
 
+- Pi 0.86.0/0.86.1 requests now recover the current prompt and active tools from transcript system messages, including section edits and tool additions/removals. The old Pi 0.85.1 request shape still works. Tool-call argument types also match Pi's new JSON-compatible contract.
 - Tool-bearing requests with no registered session or recognized cwd declaration now fail with `working_directory` instead of silently borrowing the only registered session's cwd. This prevents a pi-subagents child watchdog in another worktree from running Claude in the parent checkout; its separate review remains unavailable until pi-subagents passes a recognized cwd, or the operator explicitly enables compatibility borrowing. Ordinary child turns retain Pi's generated cwd route.
-- A tool-free request that gains tools in `before_provider_request` is refused before launch regardless of session count. A later Pi checkout's transcript system messages now produce a clear `content_shape` error before cwd routing or Claude launch; supporting that contract requires a separate adapter.
+- A tool-free request that gains tools in `before_provider_request` is refused before launch regardless of session count, including requests using Pi's transcript system messages.
 - Session-backed image requests reject a quoted temporary path before creating or writing the image store; correcting the temporary root lets the same session attach images.
 - The doctor bridge probe requires a clean child exit and reports termination failures while retaining marked state when liveness is unknown.
 - Provider timeout settings above Node's maximum timer delay now fail before launch instead of silently becoming approximately 1 ms.

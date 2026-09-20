@@ -45,9 +45,9 @@ export function sessionRegistry(): Map<string, SessionEntry> {
 /**
  * The working directory Pi states for this request, or undefined when its prompt
  * names none. Best effort by construction: Pi 0.85.1 renders it as a trailing
- * `Current working directory:` line; an inspected later checkout uses a `<cwd>`
- * section, but its transcript provider input needs a separate adapter before it
- * can be served. An extension that forces the system prompt can omit cwd entirely.
+ * `Current working directory:` line; Pi 0.86.1 uses a `<cwd>` section recovered
+ * from its transcript system messages. An extension that forces the system
+ * prompt can omit cwd entirely.
  *
  * Both readings take Pi's *last* statement, and that is load-bearing rather than
  * incidental. Pi renders project context -- the repository's own instruction

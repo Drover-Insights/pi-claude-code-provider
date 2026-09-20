@@ -42,6 +42,8 @@
     "release:check": "npm run check && npm test && node scripts/release-check.js",
     "prepublishOnly": "npm run check && npm test",
     "test:paid:smoke": "node scripts/paid-test-runner.js smoke",
+    "test:paid:compat-npm": "node scripts/paid-test-runner.js compat-npm",
+    "test:paid:compat-standalone": "node scripts/paid-test-runner.js compat-standalone",
     "test:paid:bridge": "node scripts/paid-test-runner.js bridge",
     "test:paid:bridge-standalone": "node scripts/paid-test-runner.js bridge-standalone",
     "test:paid:full": "node scripts/paid-test-runner.js full",

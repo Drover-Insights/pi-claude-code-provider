@@ -12,6 +12,7 @@ if (process.env.PI_CLAUDE_CODE_PROVIDER_PAID_TEST_CHILD !== "1") {
     throw new Error("Paid live tests must be started through an npm test:paid:* script");
 }
 const packageRoot = process.cwd();
+const compat = process.argv.includes("--compat");
 const bridge = process.argv.includes("--bridge");
 const postTools = process.argv.includes("--post-tools");
 const cache = process.argv.includes("--cache");
@@ -127,6 +128,25 @@ async function runCacheProbe(cwd) {
         completed = true;
     }
     finally {
+        await rpc.close(completed);
+    }
+}
+async function runCompatProbe(cwd) {
+    const rpc = openPiRpc(cwd, [
+        "--mode", "rpc", "--no-session", "-e", packageRoot,
+        "--provider", "pi-claude-code-provider", "--model", "sonnet:low", "--tools", "write",
+    ], "Sonnet low compatibility probe");
+    let completed = false;
+    try {
+        const events = await rpc.turn("Use write once to create compat-probe.txt containing exactly COMPAT-7319. Then reply exactly COMPAT-OK.");
+        const reply = assistantReply(events, "Sonnet low compatibility probe");
+        assert.deepEqual(events.filter((event) => event.type === "tool_execution_start").map((event) => event.toolName), ["write"]);
+        assert.equal((await readFile(join(cwd, "compat-probe.txt"), "utf8")).trim(), "COMPAT-7319");
+        assert.match(messageText(reply), /^COMPAT-OK\.?$/);
+        assert.match(reply.responseModel ?? "", /^claude-sonnet-/);
+        console.log(`ok - Sonnet low tool round trip on ${describePiLaunch()} (${reply.responseModel})`);
+        completed = true;
+    } finally {
         await rpc.close(completed);
     }
 }
@@ -328,7 +348,10 @@ if (full && !cache && !bridge && !postTools)
     await requireBashTool();
 const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-live-"));
 try {
-    if (cacheImages) {
+    if (compat) {
+        await runCompatProbe(directory);
+    }
+    else if (cacheImages) {
         await runImageCacheProbe(directory);
     }
     else if (cache) {

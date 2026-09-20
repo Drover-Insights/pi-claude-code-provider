@@ -3,6 +3,15 @@
 
 export const PAID_STAGES = {
   smoke: { label: "smoke", cap: 1, script: "live-test.js", args: [] },
+  "compat-npm": { label: "Sonnet low npm compatibility", cap: 2, script: "live-test.js", args: ["--compat"], toolBearing: true },
+  "compat-standalone": {
+    label: "Sonnet low standalone compatibility",
+    cap: 2,
+    script: "live-test.js",
+    args: ["--compat"],
+    requiresPiBin: true,
+    toolBearing: true,
+  },
   // Pi ships as an npm package and as a compiled standalone binary, and the
   // proposal bridge is spawned differently on each. Both lanes are required.
   bridge: { label: "npm bridge", cap: 3, script: "live-test.js", args: ["--bridge"], toolBearing: true },

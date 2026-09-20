@@ -356,7 +356,7 @@ export class ClaudeEventMapper {
       if (!name) throw new ClaudeCodeError("tool_unknown", `Claude proposed an unknown tool: ${qualifiedName}`);
       if (typeof source.id !== "string" || source.id.length === 0) throw new ClaudeCodeError("tool_id", "Claude emitted a tool without an ID");
       const initial = source.input && typeof source.input === "object" && !Array.isArray(source.input)
-        ? source.input as Record<string, unknown>
+        ? source.input as ToolCall["arguments"]
         : {};
       this.output.content.push({ type: "toolCall", id: source.id, name, arguments: initial });
       this.stream.push({ type: "toolcall_start", contentIndex, partial: this.output });
@@ -388,7 +388,7 @@ export class ClaudeEventMapper {
         // A preview only; content_block_stop parses the complete arguments strictly.
         const preview = parseStreamingJson<unknown>(partialJson);
         if (preview && typeof preview === "object" && !Array.isArray(preview)) {
-          block.arguments = preview as Record<string, unknown>;
+          block.arguments = preview as ToolCall["arguments"];
         }
       }
       this.stream.push({ type: "toolcall_delta", contentIndex: indexed.contentIndex, delta: delta.partial_json, partial: this.output });
@@ -411,7 +411,7 @@ export class ClaudeEventMapper {
         try {
           const parsed = JSON.parse(indexed.partialJson) as unknown;
           if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
-          block.arguments = parsed as Record<string, unknown>;
+          block.arguments = parsed as ToolCall["arguments"];
         } catch {
           // A connection drop inside streamed tool arguments truncates the JSON. Claude
           // Code then closes the block, stops the message and announces its recovery, so

@@ -3,7 +3,7 @@ import { access, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { isContextOverflow, isRetryableAssistantError } from "@earendil-works/pi-ai";
+import * as piAi from "@earendil-works/pi-ai";
 import { createClaudeStream as createProviderStream, isExpectedToolHandoffExit, waitForReadyOrExit } from "../../src/provider.ts";
 import { getLastRequestMetrics } from "../../src/metrics.ts";
 import { superviseProcess, terminateProcessGroup } from "../../src/process-utils.ts";
@@ -52,6 +52,8 @@ const toolContext = {
     ...context,
     tools: [{ name: "read", description: "read", parameters: { type: "object", properties: { path: { type: "string" } } } }],
 };
+const transcriptReplayAvailable = typeof piAi.getCurrentSystemPrompt === "function" && typeof piAi.getCurrentTools === "function";
+const { isContextOverflow, isRetryableAssistantError } = piAi;
 const toolTerminationResult = {
     type: "result",
     subtype: "error_during_execution",
@@ -462,23 +464,102 @@ test("a payload hook cannot add tools to a markerless tool-free borrow", async (
     }
 });
 
-test("new Pi transcript system messages fail before cwd routing, payload hooks, or launch", async () => {
-    let routes = 0;
-    let hooks = 0;
+test("a 0.85.1 context without a system prompt keeps its original hook payload", async () => {
+    let routed;
+    let payload;
+    const result = await createClaudeStream(
+        { executable: "/unused/claude", version: "test", subscriptionType: "pro" },
+        {
+            resolveSession: (request) => { routed = request; return { cwd: tmpdir() }; },
+            claimLaunch: async () => { throw new Error("stop before launch"); },
+        },
+    )(model, context, { onPayload: (value) => { payload = value; } }).result();
+    assert.equal(result.stopReason, "error");
+    assert.match(result.errorMessage ?? "", /stop before launch/);
+    assert.equal(routed.systemPrompt, undefined);
+    assert.equal(routed.hasTools, false);
+    assert.deepEqual(payload, { systemPrompt: undefined, messages: context.messages, tools: context.tools });
+});
+
+test("0.86 transcript replay routes a child and sends current prompt, tools, and history", { skip: !transcriptReplayAvailable }, async () => {
+    const parent = await mkdtemp(join(tmpdir(), "provider-parent-transcript-"));
+    const child = await mkdtemp(join(tmpdir(), "provider-child-transcript-"));
+    const updatedRead = { ...toolContext.tools[0], description: "updated read" };
+    const hookRead = { ...updatedRead, description: "hook read" };
+    const initial = {
+        role: "system", content: "Base instruction",
+        sections: {
+            project_context: "<project_context>\n<cwd>\n/incorrect\n</cwd>\n</project_context>",
+            cwd: `<cwd>\n${child}\n</cwd>`,
+            obsolete: "<obsolete>old</obsolete>",
+            guidance: "<guidance>first</guidance>",
+        },
+        toolsAdded: toolContext.tools, timestamp: 0,
+    };
+    const update = {
+        role: "system", content: "Additional instruction",
+        sections: { obsolete: null, guidance: "<guidance>current</guidance>" },
+        toolsRemoved: [{ name: "read" }], toolsAdded: [updatedRead], timestamp: 2,
+    };
+    const input = { messages: [initial, context.messages[0], update] };
+    const expectedPrompt = [
+        "Base instruction", "Additional instruction", initial.sections.project_context,
+        initial.sections.cwd, "<guidance>current</guidance>",
+    ].join("\n\n");
+    const fake = await fakeClaude(`
+const path = require("node:path");
+const privateDirectory = path.dirname(process.argv[process.argv.indexOf("--system-prompt-file") + 1]);
+fs.writeFileSync(path.join(__dirname, "captured-transcript"), JSON.stringify({
+  cwd: process.cwd(),
+  prompt: fs.readFileSync(path.join(privateDirectory, "system-prompt.txt"), "utf8"),
+  catalog: JSON.parse(fs.readFileSync(path.join(privateDirectory, "tools.json"), "utf8")),
+}));
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify(${JSON.stringify(toolInit)}) + "\\n");
+  process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"ok",usage:{}}) + "\\n");
+});`);
+    let routed;
+    let hooked;
+    try {
+        const result = await createClaudeStream(
+            { executable: fake.executable, version: "test", subscriptionType: "pro" },
+            { resolveSession: (request) => { routed = request; return resolveSession(new Map([["parent", { cwd: parent }]]), request); } },
+        )(model, input, {
+            sessionId: "child",
+            onPayload: (payload) => { hooked = payload; return { ...payload, tools: [hookRead] }; },
+        }).result();
+        assert.equal(result.stopReason, "stop", result.errorMessage);
+        assert.equal(routed.systemPrompt, expectedPrompt);
+        assert.equal(routed.hasTools, true);
+        assert.equal(hooked.systemPrompt, expectedPrompt);
+        assert.deepEqual(hooked.messages, context.messages);
+        assert.deepEqual(hooked.tools, [updatedRead]);
+        const captured = JSON.parse(await readFile(join(fake.dir, "captured-transcript"), "utf8"));
+        assert.equal(await realpath(captured.cwd), await realpath(child));
+        assert.equal(captured.prompt, expectedPrompt);
+        assert.deepEqual(captured.catalog, [{ name: "read", description: "hook read", inputSchema: hookRead.parameters }]);
+        assert.equal((await waitForRequestMetrics((entry) => entry.stopReason === "stop")).sessionResolution, "prompt");
+    } finally {
+        await Promise.all([parent, child, fake.dir].map((directory) => rm(directory, { recursive: true, force: true })));
+    }
+});
+
+test("0.86 transcript one-shot borrowing refuses tools added by the payload hook", { skip: !transcriptReplayAvailable }, async () => {
     let claims = 0;
     const result = await createClaudeStream(
         { executable: "/unused/claude", version: "test", subscriptionType: "pro" },
-        { resolveSession: () => { routes += 1; return { cwd: tmpdir() }; }, claimLaunch: async () => { claims += 1; } },
-    )(model, {
-        messages: [
-            { role: "system", content: "Current working directory: /child", toolsAdded: toolContext.tools, timestamp: 0 },
-            ...context.messages,
-        ],
-    }, { onPayload: () => { hooks += 1; } }).result();
+        {
+            resolveSession: (request) => resolveSession(new Map([["parent", { cwd: tmpdir() }]]), request),
+            claimLaunch: async () => { claims += 1; },
+        },
+    )(model, { messages: [{ role: "system", content: "Summary", timestamp: 0 }, ...context.messages] }, {
+        sessionId: "summary",
+        onPayload: (payload) => ({ ...payload, tools: toolContext.tools }),
+    }).result();
     assert.equal(result.stopReason, "error");
-    assert.match(result.errorMessage ?? "", /transcript system messages.*Pi 0\.85\.1/);
-    assert.deepEqual([routes, hooks, claims], [0, 0, 0]);
-    assert.equal((await waitForRequestMetrics((entry) => entry.errorCategory === "content_shape")).sessionResolution, undefined);
+    assert.match(result.errorMessage ?? "", /gained tools after before_provider_request/);
+    assert.equal(claims, 0);
 });
 test("provider forwards and reserves Pi's effective per-request output limit", async () => {
     const directory = await mkdtemp(join(tmpdir(), "provider-max-tokens-"));

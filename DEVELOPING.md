@@ -56,11 +56,11 @@ Two contracts are easy to break silently:
 | Node.js | 24.16.0 on WSL2, Ubuntu CI, and Apple Silicon macOS CI; 22.23.1 on Ubuntu CI and Windows CI |
 | Platform | WSL2 Ubuntu/Linux x64; native Windows x64; macOS (deterministic CI) |
 
-### Pi provider context after 0.85.1
+### Pi provider contexts in 0.85.1 and 0.86.1
 
-This release handles Pi 0.85.1's `Context`, with `systemPrompt` and active `tools` at the top level. An inspected later Pi checkout changes the custom-provider callback to `TranscriptContext`: system messages carry the prompt, `toolsAdded` and `toolsRemoved`, and section changes. The package's optional `*` Pi peers permit host resolution; they do not assert that every later provider contract works. This provider now rejects a transcript system message with `content_shape` before cwd routing, the payload hook, or Claude launch. A legal 0.85.1 context may omit `systemPrompt`, so absence of that field alone cannot identify the new shape. The checkout still labels its manifests 0.85.1; do not infer the contract from its version string.
+Pi 0.85.1 gives custom providers a `Context` with top-level `systemPrompt` and active `tools`. Pi 0.86.0 and 0.86.1 give them a normalized `TranscriptContext`: system messages carry the prompt, sections, and tool additions/removals. `src/provider.ts` detects those messages and uses the host Pi-AI replay helpers to recover the current prompt and tools, then removes system messages from the conversation sent to the existing serializer. The recovered prompt is used for cwd routing **before** `before_provider_request`; that hook still receives the package's logical top-level payload. Pi 0.85.1 has no replay helpers, so its old context path remains unchanged, including contexts with no prompt or tools. A transcript message on a host without the helpers fails with `content_shape` before routing or launch.
 
-Before supporting a Pi release with that contract, inspect its provider types, `normalizeContext` and transcript replay helpers, agent-loop call path, and pi-subagents' direct-Agent callers at the actual release tag. Add a shape-directed adapter that replays every system delta in order to recover the current prompt and active tools, including section edits and removals; collapse mid-conversation system messages for this provider's single system-prompt file. Recover the prompt **before** cwd routing and preserve `before_provider_request` semantics. Keep the 0.85.1-shaped input path byte-for-byte unchanged, including contexts without a system prompt or tools. Test both shapes, child cwd routing, hook-added tools, and Sonnet and Haiku cache reuse against the Pi build being adopted before widening the supported contract.
+The 0.86.1 source contract, deterministic tests, and capped Sonnet-low tool round trips on npm and standalone Pi have been checked. These do not exercise Haiku, cache reuse, or the full release matrix, so the verified baseline above remains 0.85.1. Before advancing it, run a separately authorized full release gate on the exact target build, including Sonnet and Haiku cache probes. Inspect the matching Pi provider types, replay helpers, agent-loop call path, and side-Agent callers on any later contract change.
 
 Pi's distribution is part of the baseline: the npm build runs on Node, the standalone tar.gz build is a compiled Bun binary, and `process.execPath` means something different on each. `scriptLaunch` in `src/host-runtime.ts` owns that difference. It sets `BUN_BE_BUN=1` so a compiled Pi runs the proposal bridge instead of its own entry point, and pins `--config=` to a neutral `bunfig.toml` in the private request directory: Pi's `--no-compile-autoload-bunfig` does not survive `BUN_BE_BUN`, so a `bunfig.toml` in the bridge's working directory would otherwise preload code into it. Keep the joined `--config=` form, because Bun ignores a space-separated one and then consumes the script path. The mechanism is part of the embedded Bun runtime on every standalone target. Record a standalone baseline only after `npm run test:paid:bridge-standalone` passes against that exact build.
 
@@ -95,6 +95,8 @@ The runner gives Pi a temporary agent directory and disables automatic extension
 | Command | Maximum Claude launches |
 | --- | ---: |
 | `npm run test:paid:smoke` | 1 |
+| `npm run test:paid:compat-npm` | 2 |
+| `npm run test:paid:compat-standalone` | 2 |
 | `npm run test:paid:bridge` | 3 |
 | `npm run test:paid:bridge-standalone` | 3 |
 | `npm run test:paid:post-tools` | 6 |
