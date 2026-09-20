@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Private runtime directory removal now retries brief filesystem conflicts before failing a completed request or leaving temporary state behind.
 - Requests recover the current prompt and tools from Pi's transcript system messages, including later edits. Tool-call arguments follow Pi's JSON-compatible type.
 - Parallel Pi sessions use their own working directories, image stores, and rate-limit notices. Ending one session no longer fails a request already running through another.
 - Tool-bearing side requests without a registered session or recognized cwd now fail with `working_directory` instead of borrowing another session's directory. A tool-free request that gains tools in `before_provider_request` is also refused before launch.

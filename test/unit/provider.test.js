@@ -720,10 +720,12 @@ setInterval(() => {}, 1000);`);
 test("provider does not spawn Claude for an already-aborted request", async () => {
     const root = await mkdtemp(join(tmpdir(), "provider-pre-abort-"));
     const marker = join(root, "spawned");
-    const originalTmpdir = process.env.TMPDIR;
-    process.env.TMPDIR = root;
-    const fake = await fakeClaude(`fs.writeFileSync(${JSON.stringify(marker)}, "spawned");`);
+    const temporaryRootVariable = process.platform === "win32" ? "TEMP" : "TMPDIR";
+    const originalTemporaryRoot = process.env[temporaryRootVariable];
+    process.env[temporaryRootVariable] = root;
     try {
+        assert.equal(tmpdir(), root);
+        const fake = await fakeClaude(`fs.writeFileSync(${JSON.stringify(marker)}, "spawned");`);
         const controller = new AbortController();
         controller.abort();
         const stream = createClaudeStream({
@@ -750,18 +752,20 @@ test("provider does not spawn Claude for an already-aborted request", async () =
         assert.deepEqual(privateDirectories, []);
     }
     finally {
-        if (originalTmpdir === undefined) delete process.env.TMPDIR;
-        else process.env.TMPDIR = originalTmpdir;
+        if (originalTemporaryRoot === undefined) delete process.env[temporaryRootVariable];
+        else process.env[temporaryRootVariable] = originalTemporaryRoot;
         await rm(root, { recursive: true, force: true });
     }
 });
 test("provider does not spawn Claude when the request aborts during the launch claim", async () => {
     const root = await mkdtemp(join(tmpdir(), "provider-claim-abort-"));
     const marker = join(root, "spawned");
-    const originalTmpdir = process.env.TMPDIR;
-    process.env.TMPDIR = root;
-    const fake = await fakeClaude(`fs.writeFileSync(${JSON.stringify(marker)}, "spawned");`);
+    const temporaryRootVariable = process.platform === "win32" ? "TEMP" : "TMPDIR";
+    const originalTemporaryRoot = process.env[temporaryRootVariable];
+    process.env[temporaryRootVariable] = root;
     try {
+        assert.equal(tmpdir(), root);
+        const fake = await fakeClaude(`fs.writeFileSync(${JSON.stringify(marker)}, "spawned");`);
         const controller = new AbortController();
         const abortDuringClaim = async () => {
             controller.abort();
@@ -787,8 +791,8 @@ test("provider does not spawn Claude when the request aborts during the launch c
         assert.deepEqual(privateDirectories, []);
     }
     finally {
-        if (originalTmpdir === undefined) delete process.env.TMPDIR;
-        else process.env.TMPDIR = originalTmpdir;
+        if (originalTemporaryRoot === undefined) delete process.env[temporaryRootVariable];
+        else process.env[temporaryRootVariable] = originalTemporaryRoot;
         await rm(root, { recursive: true, force: true });
     }
 });
@@ -1313,6 +1317,29 @@ process.stdin.on("end", () => {
   process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"hook ok",usage:{input_tokens:4,output_tokens:2}}) + "\\n");
   setTimeout(() => {}, 50);
 });`;
+test("provider reports persistent private cleanup failure after a successful response", async () => {
+    const fake = await fakeClaude(textResponseBody);
+    let privateDirectory;
+    const failCleanup = async (directory) => {
+        privateDirectory = directory;
+        throw new Error("synthetic EBUSY");
+    };
+    try {
+        const result = await createClaudeStream({
+            executable: fake.executable,
+            version: CAPTURED_CLAUDE_VERSION,
+            subscriptionType: "pro",
+        }, { cleanupDirectory: failCleanup })(model, context, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "error");
+        assert.match(result.errorMessage ?? "", /private request cleanup failed: synthetic EBUSY/);
+        assert.equal(result.content[0]?.text, "hook ok");
+        const metrics = await waitForRequestMetrics((entry) => entry.cleanupComplete === false);
+        assert.equal(metrics.stopReason, "error");
+    }
+    finally {
+        await Promise.all([privateDirectory, fake.dir].filter(Boolean).map((directory) => rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })));
+    }
+});
 test("provider reports a synthetic response to Pi before streaming content", async () => {
     const fake = await fakeClaude(textResponseBody);
     try {

@@ -173,7 +173,7 @@ else process.stdout.write(${JSON.stringify(CLAUDE_HEADLESS_HELP)});
         if (original.path === undefined) delete process.env.PATH; else process.env.PATH = original.path;
         if (original.pathExt === undefined) delete process.env.PATHEXT; else process.env.PATHEXT = original.pathExt;
         if (original.override === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH; else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original.override;
-        await rm(directory, { recursive: true, force: true });
+        await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
 });
 
@@ -204,6 +204,6 @@ else process.stdout.write(${JSON.stringify(CLAUDE_HEADLESS_HELP)});
     }
     finally {
         if (originalClaude === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH; else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = originalClaude;
-        await rm(directory, { recursive: true, force: true });
+        await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
 });

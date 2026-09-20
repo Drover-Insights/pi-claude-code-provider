@@ -51,7 +51,8 @@ export interface RuntimeCleanupResult {
 }
 
 export async function removeRuntimeDirectory(directory: string): Promise<void> {
-  await rm(directory, { recursive: true, force: true });
+  // A just-exited child can briefly hold files here; retry transient removal errors.
+  await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
 export async function createRuntimeDirectory(
