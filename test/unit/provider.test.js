@@ -409,7 +409,7 @@ process.stdin.on("end", () => {
     }
 });
 
-test("inherited child turns use their stated cwd, while markerless watchdog requests refuse or explicitly borrow", async () => {
+test("tool-bearing side requests use a declared cwd, while markerless requests refuse or explicitly borrow", async () => {
     const parent = await mkdtemp(join(tmpdir(), "provider-parent-cwd-"));
     const child = await mkdtemp(join(tmpdir(), "provider-child-cwd-"));
     const spawnMarker = join(parent, "spawned");
@@ -425,7 +425,8 @@ process.stdin.on("end", () => {
     const run = (systemPrompt, options = {}, allowBorrowSoleDirectory = false) => createClaudeStream(installation, {
         resolveSession: (request) => resolveSession(registry, { ...request, allowBorrowSoleDirectory }),
     })(model, providerContext({ tools: [readTool], systemPrompt }), options).result();
-    const watchdog = `You are the main-session subagent watchdog for Pi.\nWorking directory: ${child}\nReview only the supplied parent turn delta.`;
+    const instructions = "You are the main-session subagent watchdog for Pi.\nReview only the supplied parent turn delta.";
+    const proseOnly = `${instructions}\nWorking directory: ${child}`;
     try {
         const childTurn = await run(`Child agent\nCurrent working directory: ${child}`, { sessionId: "unregistered-child" });
         assert.equal(childTurn.stopReason, "stop", childTurn.errorMessage);
@@ -433,13 +434,21 @@ process.stdin.on("end", () => {
         assert.equal((await waitForRequestMetrics((entry) => entry.sessionResolution === "prompt")).errorCategory, undefined);
         await rm(spawnMarker);
 
-        const refused = await run(watchdog);
+        // pi-subagents HEAD sends this <cwd> in its leading system message,
+        // alongside the helper's tool declarations.
+        const watchdog = await run(`${instructions}\n\n<cwd>\n${child}\n</cwd>`);
+        assert.equal(watchdog.stopReason, "stop", watchdog.errorMessage);
+        assert.equal(await realpath(await readFile(spawnMarker, "utf8")), await realpath(child));
+        assert.equal((await waitForRequestMetrics((entry) => entry.sessionResolution === "prompt")).errorCategory, undefined);
+        await rm(spawnMarker);
+
+        const refused = await run(proseOnly);
         assert.equal(refused.stopReason, "error");
         assert.match(refused.errorMessage ?? "", /refusing to borrow the sole live session/);
         assert.equal((await waitForRequestMetrics((entry) => entry.errorCategory === "working_directory")).sessionResolution, undefined);
         await assert.rejects(access(spawnMarker));
 
-        const borrowed = await run(watchdog, {}, true);
+        const borrowed = await run(proseOnly, {}, true);
         assert.equal(borrowed.stopReason, "stop", borrowed.errorMessage);
         assert.equal(await realpath(await readFile(spawnMarker, "utf8")), await realpath(parent));
         assert.equal((await waitForRequestMetrics((entry) => entry.sessionResolution === "single")).errorCategory, undefined);

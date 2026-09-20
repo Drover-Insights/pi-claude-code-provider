@@ -119,20 +119,25 @@ test("a markerless tool-bearing side request fails with one live session unless 
     );
 });
 
-test("pi-subagents' direct watchdog header does not identify its child's cwd", () => {
-    const watchdog = [
+test("tool-bearing direct Agents need a recognized cwd declaration", () => {
+    // pi-subagents 0.70.0 used prose here; HEAD puts the helper cwd in a <cwd>
+    // section of the leading system message. Prose alone must still fail closed.
+    const instructions = [
         "You are the main-session subagent watchdog for Pi.",
-        "Working directory: /srv/child",
         "Review only the supplied parent turn delta. Inspect repository files only when needed to verify a concrete concern.",
     ].join("\n");
-    assert.equal(promptWorkingDirectory(watchdog), undefined);
+    const proseOnly = `${instructions}\nWorking directory: /srv/child`;
+    assert.equal(promptWorkingDirectory(proseOnly), undefined);
     for (const sessionId of [undefined, "unregistered-child"]) {
-        const request = { sessionId, systemPrompt: watchdog, hasTools: true };
+        const request = { sessionId, systemPrompt: proseOnly, hasTools: true };
         assert.match(resolveSession(registryOf("/srv/parent"), request).error, /no registered session or recognized working directory/);
+        const declared = resolveSession(registryOf("/srv/parent"), {
+            ...request,
+            systemPrompt: `${instructions}\n\n<cwd>\n/srv/child\n</cwd>`,
+        });
+        assert.equal(declared.cwd, "/srv/child");
+        assert.equal(declared.resolution, "prompt");
     }
-    // An upstream caller can append a trailing cwd declaration.
-    const compatible = `${watchdog}\nCurrent working directory: /srv/child`;
-    assert.equal(resolveSession(registryOf("/srv/parent"), { systemPrompt: compatible, hasTools: true }).cwd, "/srv/child");
 });
 
 test("Pi's tool-free one-shots are hosted rather than refused", () => {
