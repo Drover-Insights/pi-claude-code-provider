@@ -8,7 +8,7 @@ import type {
   Model,
   ProviderResponse,
   SimpleStreamOptions,
-  Tool,
+  TranscriptContext,
 } from "@earendil-works/pi-ai";
 import * as piAi from "@earendil-works/pi-ai";
 import { bridgeArgv, formatBridgeArgv, providerArgs, thinkingDisplay, transcriptBreakpointEnabled } from "./claude-args.ts";
@@ -35,26 +35,26 @@ type CleanupDirectory = (directory: string) => Promise<void>;
 /** Internal dependency seam for deterministic abort-timing tests. */
 type ClaimLaunch = () => Promise<void>;
 
-/** Pi 0.85.1 has no transcript replay exports; its provider input has no system messages. */
-const transcriptReplay = piAi as typeof piAi & {
-  getCurrentSystemPrompt?: (messages: readonly { role: string }[]) => string;
-  getCurrentTools?: (messages: readonly { role: string }[]) => Tool[];
-};
-
-function normalizeProviderContext(context: Context): { context: Context; error?: never } | { context?: never; error: ClaudeCodeError } {
-  if (!context.messages.some((message) => (message as { role: string }).role === "system")) return { context };
-  if (!transcriptReplay.getCurrentSystemPrompt || !transcriptReplay.getCurrentTools) {
-    return { error: new ClaudeCodeError("content_shape", "Pi sent transcript system messages but its transcript replay helpers are unavailable") };
-  }
-  // Pi 0.86+ providers receive a normalized transcript. Its own helpers replay
-  // sections and tool deltas in order; Claude Code gets the resulting prompt and
-  // active catalog, while ordinary message history stays in its existing format.
+/**
+ * Recover Pi's logical request from the transcript it hands a provider. The
+ * prompt and tool declarations live in system messages; `normalizeContext()`
+ * folds the public `Context` shorthand into them before any provider is reached,
+ * so those top-level fields never arrive here. Pi's own helpers replay sections
+ * and tool deltas in order, and Claude Code gets the resulting prompt and active
+ * catalog while ordinary message history stays in its existing format.
+ *
+ * An empty recovery collapses to `undefined` rather than `""` or `[]`: a
+ * transcript draws no distinction between "declared nothing" and "declared
+ * empty", and `undefined` is the shape a `before_provider_request` hook already
+ * reads as absent.
+ */
+function recoverProviderContext(context: TranscriptContext): Context {
+  const systemPrompt = piAi.getCurrentSystemPrompt(context.messages);
+  const tools = piAi.getCurrentTools(context.messages);
   return {
-    context: {
-      systemPrompt: transcriptReplay.getCurrentSystemPrompt(context.messages),
-      tools: transcriptReplay.getCurrentTools(context.messages),
-      messages: context.messages.filter((message) => (message as { role: string }).role !== "system"),
-    },
+    systemPrompt: systemPrompt === "" ? undefined : systemPrompt,
+    tools: tools.length === 0 ? undefined : tools,
+    messages: context.messages.filter((message) => (message as { role: string }).role !== "system"),
   };
 }
 
@@ -78,19 +78,18 @@ export function createClaudeStream(
   const cleanupDirectory = dependencies.cleanupDirectory ?? removeRuntimeDirectory;
   const claimLaunch = dependencies.claimLaunch ?? claimPaidTestLaunch;
   const supervise = dependencies.supervise ?? superviseProcess;
-  return (model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream => {
+  return (model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions): AssistantMessageEventStream => {
     const stream = piAi.createAssistantMessageEventStream();
-    const normalized = normalizeProviderContext(context);
-    const requestContext = normalized.context;
+    const requestContext = recoverProviderContext(context);
     // Resolved once, when Pi starts the request: a session starting or ending
     // during asynchronous preparation must not move this request to another
     // directory. The pre-hook prompt is used deliberately, because the session a
     // request belongs to is not a payload hook's to change.
-    const session = requestContext ? dependencies.resolveSession?.({
+    const session = dependencies.resolveSession?.({
       sessionId: options?.sessionId,
       systemPrompt: requestContext.systemPrompt,
       hasTools: (requestContext.tools?.length ?? 0) > 0,
-    }) : undefined;
+    });
     const resolved = session && "error" in session ? undefined : session;
     const imageStore = resolved?.imageStore;
     const onRateLimitNotice = resolved?.onRateLimitNotice;
@@ -135,8 +134,8 @@ export function createClaudeStream(
         claudeVersion: installation.version,
         requestedModel: model.id,
         effort,
-        messageCount: requestContext?.messages.length ?? context.messages.length,
-        toolCount: requestContext?.tools?.length ?? 0,
+        messageCount: requestContext.messages.length,
+        toolCount: requestContext.tools?.length ?? 0,
         sessionResolution: resolved?.resolution,
         imageCount: 0,
         transcriptBytes: 0,
@@ -243,7 +242,6 @@ export function createClaudeStream(
       };
 
       try {
-        if (!requestContext) throw normalized.error;
         // Phase 1 — prepare Pi's logical payload and private transport state.
         const effectiveContext = await applyPayloadHook(model, requestContext, options);
         metrics.lastPhase = "payload_applied";

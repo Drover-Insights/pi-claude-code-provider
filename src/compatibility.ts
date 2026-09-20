@@ -1,7 +1,7 @@
 import { release } from "node:os";
 
 export const VERIFIED_VERSIONS = Object.freeze({
-  pi: "0.85.1",
+  pi: "0.86.1",
   claudeCode: "2.1.270",
 });
 
@@ -12,7 +12,7 @@ export const VERIFIED_VERSIONS = Object.freeze({
 // would turn every baseline bump into a silent, unreviewed support drop. Assert
 // nothing about their relative order.
 export const MINIMUM_VERSIONS = Object.freeze({
-  pi: "0.85.1",
+  pi: "0.86.1",
   claudeCode: "2.1.270",
 });
 

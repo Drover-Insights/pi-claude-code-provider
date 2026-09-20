@@ -43,17 +43,20 @@ export function sessionRegistry(): Map<string, SessionEntry> {
 }
 
 /**
- * The working directory Pi states for this request, or undefined when its prompt
- * names none. Best effort by construction: Pi 0.85.1 renders it as a trailing
- * `Current working directory:` line; Pi 0.86.1 uses a `<cwd>` section recovered
- * from its transcript system messages. An extension that forces the system
- * prompt can omit cwd entirely.
+ * The working directory stated for this request, or undefined when the prompt
+ * names none. Best effort by construction, and two declaration forms are
+ * recognized: a `<cwd>` section, which is what Pi itself renders, and a trailing
+ * `Current working directory:` line, which a direct or upstream caller may author
+ * for a session this package never registered. Both arrive here the same way,
+ * recovered from the transcript's system messages, because Pi folds a caller's
+ * prompt into them verbatim. An extension that forces the system prompt can omit
+ * cwd entirely.
  *
- * Both readings take Pi's *last* statement, and that is load-bearing rather than
+ * Both readings take the *last* statement, and that is load-bearing rather than
  * incidental. Pi renders project context -- the repository's own instruction
- * files, which this provider does not author -- ahead of the directory in both
- * renderings, so matching the last section and anchoring the 0.85.1 line to the
- * end of the prompt is what keeps a repository from naming the directory Claude
+ * files, which this provider does not author -- ahead of the directory, so
+ * matching the last section and anchoring the trailing line to the end of the
+ * prompt is what keeps a repository from naming the directory Claude
  * runs in. Preferring an earlier match would hand that choice to project files:
  * directly for a request whose session is unknown, where this is the only source
  * of truth, and as a refusal for one whose session is known, where a disagreeing

@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, DefaultPackageManager, SettingsManager, formatSize } from "@earendil-works/pi-coding-agent";
 import initializePiClaudeCodeProvider from "../../extensions/index.ts";
 import implementation from "../../extensions/pi-claude-code-provider.ts";
@@ -13,6 +14,13 @@ import { VERIFIED_VERSIONS, platformStatus } from "../../src/compatibility.ts";
 import { CAPTURED_CLAUDE_HELP_PATH, ELIGIBLE_CLAUDE_AUTH } from "../support/claude-fixture.js";
 import { nodeFixtureSource } from "../support/node-fixture.js";
 import { sessionRegistry } from "../../src/session-registry.ts";
+
+// Pi folds `systemPrompt` and `tools` into transcript system messages before a
+// provider is reached. Fixtures normalize through Pi's own helper so they carry
+// the shape the provider actually receives; the pre-normalization shape would
+// leave those fields where nothing reads them.
+const baseMessages = [{ role: "user", content: "hello", timestamp: 1 }];
+const providerContext = (init = {}) => normalizeContext({ messages: baseMessages, tools: [], ...init });
 import { completeSimple, getApiProvider, resetApiProviders, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
 
 const piClaudeCodeProvider = (pi) => initializePiClaudeCodeProvider(pi);
@@ -149,11 +157,10 @@ test("sole-directory compatibility flag is required for a markerless tool-bearin
             baseUrl: "pi-claude-code-provider://local",
         };
         pi.handlers.get("session_start")[0]({}, sessionContext(parent, { notify() { } }));
-        const sideContext = {
+        const sideContext = providerContext({
             systemPrompt: `You are a side Agent.\nWorking directory: ${child}\nReview this request.`,
-            messages: [{ role: "user", content: "hello", timestamp: 1 }],
             tools: [{ name: "read", description: "read", parameters: { type: "object", properties: {} } }],
-        };
+        });
         const strict = await provider.streamSimple(model, sideContext).result();
         assert.equal(strict.stopReason, "error");
         assert.match(strict.errorMessage ?? "", /refusing to borrow the sole live session/);
@@ -197,7 +204,7 @@ test("routes rate-limit warnings to the active Pi UI and launches nothing before
             api: "pi-claude-code-provider-headless",
             baseUrl: "pi-claude-code-provider://local",
         };
-        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+        const context = providerContext();
         // Before any session there is no working directory to run Claude in.
         const early = await provider.streamSimple(model, context, { reasoning: "medium" }).result();
         assert.equal(early.stopReason, "error");
@@ -258,7 +265,7 @@ test("does not report a disabled overage as a rate limit", async () => {
         };
         const notices = [];
         pi.handlers.get("session_start")[0]({}, sessionContext(tmpdir(), { notify(message, level) { notices.push({ message, level }); } }));
-        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+        const context = providerContext();
         assert.equal((await provider.streamSimple(model, context, { reasoning: "medium" }).result()).stopReason, "stop");
         assert.deepEqual(notices.filter(({ message }) => message.includes("rate limit")), []);
         // A session left open would stay registered for the whole test file, and
@@ -297,7 +304,7 @@ test("reports a repeated rate-limit warning once per session", async () => {
         };
         const notices = [];
         pi.handlers.get("session_start")[0]({}, sessionContext(tmpdir(), { notify(message, level) { notices.push({ message, level }); } }));
-        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+        const context = providerContext();
         await provider.streamSimple(model, context, { reasoning: "medium" }).result();
         await provider.streamSimple(model, context, { reasoning: "medium" }).result();
         assert.deepEqual(notices.filter(({ message }) => message.includes("rate limit")), [{
@@ -339,7 +346,7 @@ test("reports one warning while utilization moves within the displayed percent",
         };
         const notices = [];
         pi.handlers.get("session_start")[0]({}, sessionContext(tmpdir(), { notify(message, level) { notices.push({ message, level }); } }));
-        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+        const context = providerContext();
         await provider.streamSimple(model, context, { reasoning: "medium" }).result();
         assert.deepEqual(notices.filter(({ message }) => message.includes("rate limit")).map(({ message }) => message), [
             `[pi-claude-code-provider] Claude rate limit warning: 87% used (five_hour); resets at ${new Date(1_800_000_000_000).toLocaleString()}`,
@@ -378,7 +385,7 @@ test("converts fractional weekly utilization to a percentage", async () => {
             api: "pi-claude-code-provider-headless",
             baseUrl: "pi-claude-code-provider://local",
         };
-        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+        const context = providerContext();
         const notices = [];
         pi.handlers.get("session_start")[0]({}, sessionContext(tmpdir(), { notify(message, level) { notices.push({ message, level }); } }));
         assert.equal((await provider.streamSimple(model, context, { reasoning: "medium" }).result()).stopReason, "stop");
@@ -545,7 +552,7 @@ test("provider requests run Claude in the current Pi session's directory, never 
             api: "pi-claude-code-provider-headless",
             baseUrl: "pi-claude-code-provider://local",
         };
-        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+        const context = providerContext();
         const request = () => provider.streamSimple(model, context, { reasoning: "medium" }).result();
         const childCwd = async () => {
             const result = await request();
@@ -606,11 +613,7 @@ test("parallel sessions each run in their own directory and survive each other's
                 },
             };
         };
-        const context = (systemPrompt) => ({
-            messages: [{ role: "user", content: "hello", timestamp: 1 }],
-            tools: [],
-            ...(systemPrompt ? { systemPrompt } : {}),
-        });
+        const context = (systemPrompt) => providerContext(systemPrompt ? { systemPrompt } : {});
         const a = await start(childA);
         const b = await start(childB);
         const run = async (sessionId, systemPrompt) => {
@@ -630,7 +633,7 @@ Current working directory: ${worktree}`), await realpath(worktree));
         // Pi's compaction one-shot: a fresh id, no tools, no stated directory.
         assert.equal(await run("01a0-fresh-compaction"), await realpath(childB));
         // The same unknown id with tools is refused rather than guessed.
-        const guessed = await b.stream(b.model, { ...context(), tools: [{ name: "read", description: "read", parameters: { type: "object" } }] }, { reasoning: "medium", sessionId: "01a0-fresh-compaction" }).result();
+        const guessed = await b.stream(b.model, providerContext({ tools: [{ name: "read", description: "read", parameters: { type: "object" } }] }), { reasoning: "medium", sessionId: "01a0-fresh-compaction" }).result();
         assert.equal(guessed.stopReason, "error");
         assert.match(guessed.errorMessage ?? "", /no registered session or recognized working directory.*2 sessions are live/);
         // The payload hook can add tools after the initial tool-free routing
@@ -696,7 +699,7 @@ test("Pi binding one session twice is not an error", async () => {
         const provider = pi.providers.get("pi-claude-code-provider");
         const result = await provider.streamSimple(
             providerModel(provider),
-            { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] },
+            providerContext(),
             { reasoning: "medium", sessionId: second.sessionManager.getSessionId() },
         ).result();
         assert.equal(result.stopReason, "stop", result.errorMessage);
@@ -735,7 +738,7 @@ test("session shutdown does not wait for a request Pi has not cancelled yet", as
         const ctx = sessionContext(sessionCwd, { notify() { } });
         pi.handlers.get("session_start")[0]({}, ctx);
         const provider = pi.providers.get("pi-claude-code-provider");
-        const context = {
+        const context = providerContext({
             messages: [{
                 role: "user",
                 content: [
@@ -744,8 +747,7 @@ test("session shutdown does not wait for a request Pi has not cancelled yet", as
                 ],
                 timestamp: 1,
             }],
-            tools: [],
-        };
+        });
         let settled = false;
         const pending = provider
             .streamSimple(providerModel(provider), context, { reasoning: "medium", sessionId: ctx.sessionManager.getSessionId() })

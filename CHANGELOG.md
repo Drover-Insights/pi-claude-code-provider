@@ -2,20 +2,23 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking.** Pi 0.86.1 is now the minimum supported version, raised from 0.85.1, because Pi 0.86 changed the shape it hands custom providers: the system prompt and tool declarations moved into transcript system messages. Upgrade Pi before upgrading this package. The floor is advisory rather than enforced -- installing and running on an older Pi is not blocked, and `/pi-claude-code-provider-doctor` reports when your Pi falls below it -- but requests on Pi 0.85.1 are no longer supported or tested.
+- In the optional metrics log, `imageCount` now counts image content blocks rather than the files written for them, so it matches the number an "At most 20 images" rejection actually counted. Identical images are still stored and sent once. The log's schema version is now 5.
+
 ### Added
+
 
 - `PI_CLAUDE_CODE_PROVIDER_BORROW_SOLE_DIRECTORY=on` explicitly restores sole-session cwd borrowing for tool-bearing side requests that provide no recognized cwd. It can run Claude in another Agent's directory and is off by default.
 - The doctor reports whether the last request used a registered session, a Pi prompt declaration, a tool-free summary borrow, or the explicit sole-session compatibility borrow.
 - `/pi-claude-code-provider-doctor` reports how much of the last request Claude reused from its prompt cache, and says so plainly when an established conversation reused almost nothing. Losing cache reuse is otherwise silent: turns simply get slower and cost more. One low reading is not a diagnosis, and the doctor says that too.
 - `/pi-claude-code-provider-doctor` names a model whose context window Claude Code has stopped serving at the size this package advertises. The size checks that reject an over-large request before it is sent use the advertised value, so a quieter window would let a request through that the API then refuses mid-answer.
 
-### Changed
-
-- In the optional metrics log, `imageCount` now counts image content blocks rather than the files written for them, so it matches the number an "At most 20 images" rejection actually counted. Identical images are still stored and sent once. The log's schema version is now 5.
-
 ### Fixed
 
-- Pi 0.86.0/0.86.1 requests now recover the current prompt and active tools from transcript system messages, including section edits and tool additions/removals. The old Pi 0.85.1 request shape still works. Tool-call argument types also match Pi's new JSON-compatible contract.
+
+- Requests now recover the current prompt and active tools from Pi's transcript system messages, including section edits and tool additions/removals. Tool-call argument types also match Pi's new JSON-compatible contract.
 - Tool-bearing requests with no registered session or recognized cwd declaration now fail with `working_directory` instead of silently borrowing the only registered session's cwd. This prevents a pi-subagents child watchdog in another worktree from running Claude in the parent checkout; its separate review remains unavailable until pi-subagents passes a recognized cwd, or the operator explicitly enables compatibility borrowing. Ordinary child turns retain Pi's generated cwd route.
 - A tool-free request that gains tools in `before_provider_request` is refused before launch regardless of session count, including requests using Pi's transcript system messages.
 - Session-backed image requests reject a quoted temporary path before creating or writing the image store; correcting the temporary root lets the same session attach images.

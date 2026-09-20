@@ -23,7 +23,15 @@ const model = {
     contextWindow: 1_000_000,
     maxTokens: 64_000,
 };
-const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+const baseMessages = [{ role: "user", content: "hello", timestamp: 1 }];
+const readTool = { name: "read", description: "read", parameters: { type: "object", properties: { path: { type: "string" } } } };
+// Pi normalizes every request into a transcript before a provider sees it,
+// folding `systemPrompt` and `tools` into system messages. Fixtures go through
+// Pi's own normalizer so they carry the shape the provider actually receives;
+// building the pre-normalization shape by hand would leave those fields where
+// the provider never reads them, and the assertions below would measure nothing.
+const providerContext = (init = {}) => piAi.normalizeContext({ messages: baseMessages, ...init });
+const context = providerContext({ tools: [] });
 async function fakeClaude(body, { writeReady = true } = {}) {
     const dir = await mkdtemp(join(tmpdir(), "fake-claude-"));
     const executable = join(dir, process.platform === "win32" ? "claude.cjs" : "claude");
@@ -48,11 +56,7 @@ const toolInit = {
     tools: ["mcp__pi__read"],
     mcp_servers: [{ name: "pi", status: "connected" }],
 };
-const toolContext = {
-    ...context,
-    tools: [{ name: "read", description: "read", parameters: { type: "object", properties: { path: { type: "string" } } } }],
-};
-const transcriptReplayAvailable = typeof piAi.getCurrentSystemPrompt === "function" && typeof piAi.getCurrentTools === "function";
+const toolContext = providerContext({ tools: [readTool] });
 const { isContextOverflow, isRetryableAssistantError } = piAi;
 const toolTerminationResult = {
     type: "result",
@@ -130,7 +134,7 @@ setTimeout(() => {
             { role: "toolResult", toolCallId: "call-paired", toolName: "read", content: [{ type: "text", text: "paired result" }], isError: false, timestamp: 5 },
             { role: "toolResult", toolCallId: "call-orphan", toolName: "removed-tool", content: [{ type: "text", text: "orphan result" }], isError: true, timestamp: 6 },
         ],
-        tools: toolContext.tools,
+        tools: [readTool],
     };
     let claims = 0;
     try {
@@ -150,7 +154,7 @@ setTimeout(() => {
         assert.equal(claims, 1);
         const captured = JSON.parse(await readFile(join(fake.dir, "captured-preparation"), "utf8"));
         assert.equal(captured.systemPrompt, "replacement system");
-        assert.deepEqual(captured.catalog, [{ name: "read", description: "read", inputSchema: toolContext.tools[0].parameters }]);
+        assert.deepEqual(captured.catalog, [{ name: "read", description: "read", inputSchema: readTool.parameters }]);
         assert.ok(captured.files.some((name) => /^image-[0-9a-f]{64}\.png$/.test(name)));
         const metrics = await waitForRequestMetrics((entry) => entry.stopReason === "stop");
         assert.equal(metrics.schemaVersion, 5);
@@ -420,7 +424,7 @@ process.stdin.on("end", () => {
     const installation = { executable: fake.executable, version: "test", subscriptionType: "pro" };
     const run = (systemPrompt, options = {}, allowBorrowSoleDirectory = false) => createClaudeStream(installation, {
         resolveSession: (request) => resolveSession(registry, { ...request, allowBorrowSoleDirectory }),
-    })(model, { ...toolContext, systemPrompt }, options).result();
+    })(model, providerContext({ tools: [readTool], systemPrompt }), options).result();
     const watchdog = `You are the main-session subagent watchdog for Pi.\nWorking directory: ${child}\nReview only the supplied parent turn delta.`;
     try {
         const childTurn = await run(`Child agent\nCurrent working directory: ${child}`, { sessionId: "unregistered-child" });
@@ -454,7 +458,7 @@ test("a payload hook cannot add tools to a markerless tool-free borrow", async (
                 resolveSession: (request) => resolveSession(new Map([["parent", { cwd: directory }]]), request),
                 claimLaunch: async () => { claims += 1; },
             },
-        )(model, context, { onPayload: (payload) => ({ ...payload, tools: toolContext.tools }) }).result();
+        )(model, context, { onPayload: (payload) => ({ ...payload, tools: [readTool] }) }).result();
         assert.equal(result.stopReason, "error");
         assert.match(result.errorMessage ?? "", /gained tools after before_provider_request/);
         assert.equal(claims, 0);
@@ -464,7 +468,7 @@ test("a payload hook cannot add tools to a markerless tool-free borrow", async (
     }
 });
 
-test("a 0.85.1 context without a system prompt keeps its original hook payload", async () => {
+test("a transcript declaring no prompt or tools reaches the hook as absent, not empty", async () => {
     let routed;
     let payload;
     const result = await createClaudeStream(
@@ -478,13 +482,13 @@ test("a 0.85.1 context without a system prompt keeps its original hook payload",
     assert.match(result.errorMessage ?? "", /stop before launch/);
     assert.equal(routed.systemPrompt, undefined);
     assert.equal(routed.hasTools, false);
-    assert.deepEqual(payload, { systemPrompt: undefined, messages: context.messages, tools: context.tools });
+    assert.deepEqual(payload, { systemPrompt: undefined, messages: baseMessages, tools: undefined });
 });
 
-test("0.86 transcript replay routes a child and sends current prompt, tools, and history", { skip: !transcriptReplayAvailable }, async () => {
+test("0.86 transcript replay routes a child and sends current prompt, tools, and history", async () => {
     const parent = await mkdtemp(join(tmpdir(), "provider-parent-transcript-"));
     const child = await mkdtemp(join(tmpdir(), "provider-child-transcript-"));
-    const updatedRead = { ...toolContext.tools[0], description: "updated read" };
+    const updatedRead = { ...readTool, description: "updated read" };
     const hookRead = { ...updatedRead, description: "hook read" };
     const initial = {
         role: "system", content: "Base instruction",
@@ -494,7 +498,7 @@ test("0.86 transcript replay routes a child and sends current prompt, tools, and
             obsolete: "<obsolete>old</obsolete>",
             guidance: "<guidance>first</guidance>",
         },
-        toolsAdded: toolContext.tools, timestamp: 0,
+        toolsAdded: [readTool], timestamp: 0,
     };
     const update = {
         role: "system", content: "Additional instruction",
@@ -545,7 +549,7 @@ process.stdin.on("end", () => {
     }
 });
 
-test("0.86 transcript one-shot borrowing refuses tools added by the payload hook", { skip: !transcriptReplayAvailable }, async () => {
+test("0.86 transcript one-shot borrowing refuses tools added by the payload hook", async () => {
     let claims = 0;
     const result = await createClaudeStream(
         { executable: "/unused/claude", version: "test", subscriptionType: "pro" },
@@ -553,9 +557,9 @@ test("0.86 transcript one-shot borrowing refuses tools added by the payload hook
             resolveSession: (request) => resolveSession(new Map([["parent", { cwd: tmpdir() }]]), request),
             claimLaunch: async () => { claims += 1; },
         },
-    )(model, { messages: [{ role: "system", content: "Summary", timestamp: 0 }, ...context.messages] }, {
+    )(model, { messages: [{ role: "system", content: "Summary", timestamp: 0 }, ...baseMessages] }, {
         sessionId: "summary",
-        onPayload: (payload) => ({ ...payload, tools: toolContext.tools }),
+        onPayload: (payload) => ({ ...payload, tools: [readTool] }),
     }).result();
     assert.equal(result.stopReason, "error");
     assert.match(result.errorMessage ?? "", /gained tools after before_provider_request/);
@@ -1269,7 +1273,7 @@ test("provider cleans private transport state after an early process failure", a
     const marker = join(markerDirectory, "cwd");
     const fake = await fakeClaude(`const index = process.argv.indexOf("--system-prompt-file"); const marker = fs.readFileSync(process.argv[index + 1], "utf8"); fs.writeFileSync(marker, require("node:path").dirname(process.argv[index + 1])); process.exit(9);`);
     try {
-        const result = await createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" })(model, { ...context, systemPrompt: marker }, { reasoning: "medium" }).result();
+        const result = await createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" })(model, providerContext({ tools: [], systemPrompt: marker }), { reasoning: "medium" }).result();
         assert.equal(result.stopReason, "error");
         const privateDirectory = await readFile(marker, "utf8");
         await assert.rejects(access(privateDirectory));
@@ -1437,7 +1441,7 @@ setTimeout(() => {
   process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"large ok",usage:{input_tokens:4,output_tokens:2}}) + "\\n");
 }, 20);`);
     try {
-        const result = await createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" })(model, { ...context, systemPrompt }, { reasoning: "medium" }).result();
+        const result = await createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" })(model, providerContext({ tools: [], systemPrompt }), { reasoning: "medium" }).result();
         assert.equal(result.stopReason, "stop", result.errorMessage);
         const captured = JSON.parse(await readFile(join(fake.dir, "captured-large"), "utf8"));
         assert.equal(captured.bytes, 146_101);
@@ -1456,7 +1460,7 @@ setTimeout(() => {
 });
 test("provider rejects a system prompt the served model cannot hold", async () => {
     const systemPrompt = "y".repeat(LARGEST_ADMITTED_SYSTEM_PROMPT_BYTES + 3);
-    const result = await createClaudeStream(DEAD_INSTALLATION)(BUDGET_MODEL, { ...context, systemPrompt }, { reasoning: "medium" }).result();
+    const result = await createClaudeStream(DEAD_INSTALLATION)(BUDGET_MODEL, providerContext({ tools: [], systemPrompt }), { reasoning: "medium" }).result();
     const metrics = await waitForRequestMetrics((entry) => entry.errorCategory === "system_prompt_budget");
     assert.match(result.errorMessage ?? "", /system prompt alone needs about \d+ tokens/);
     assert.match(result.errorMessage ?? "", /Reduce loaded system instructions, project context, or skill descriptions/);
@@ -1469,7 +1473,7 @@ test("provider rejects a system prompt the served model cannot hold", async () =
 });
 test("the system-prompt precheck admits the boundary and the full budget still decides", async () => {
     const systemPrompt = "y".repeat(LARGEST_ADMITTED_SYSTEM_PROMPT_BYTES);
-    const result = await createClaudeStream(DEAD_INSTALLATION)(BUDGET_MODEL, { ...context, systemPrompt }, { reasoning: "medium" }).result();
+    const result = await createClaudeStream(DEAD_INSTALLATION)(BUDGET_MODEL, providerContext({ tools: [], systemPrompt }), { reasoning: "medium" }).result();
     const metrics = await waitForRequestMetrics((entry) => entry.errorCategory === "context_budget");
     // The precheck is necessary, not sufficient: preparation ran, and the
     // transcript's own bytes then carried the request over the window.
@@ -1480,12 +1484,12 @@ test("the system-prompt budget measures bytes rather than characters", async () 
     const systemPrompt = "。".repeat(200_000);
     assert.equal(systemPrompt.length, 200_000);
     assert.equal(Buffer.byteLength(systemPrompt), 600_000);
-    const result = await createClaudeStream(DEAD_INSTALLATION)(BUDGET_MODEL, { ...context, systemPrompt }, { reasoning: "medium" }).result();
+    const result = await createClaudeStream(DEAD_INSTALLATION)(BUDGET_MODEL, providerContext({ tools: [], systemPrompt }), { reasoning: "medium" }).result();
     await waitForRequestMetrics((entry) => entry.errorCategory === "system_prompt_budget");
     assert.match(result.errorMessage ?? "", /system prompt alone needs about \d+ tokens/);
 });
 test("budget failures classify correctly for Pi's overflow recovery", async () => {
-    const oversized = await createClaudeStream(DEAD_INSTALLATION)(BUDGET_MODEL, { ...context, systemPrompt: "y".repeat(LARGEST_ADMITTED_SYSTEM_PROMPT_BYTES + 3) }, { reasoning: "medium" }).result();
+    const oversized = await createClaudeStream(DEAD_INSTALLATION)(BUDGET_MODEL, providerContext({ tools: [], systemPrompt: "y".repeat(LARGEST_ADMITTED_SYSTEM_PROMPT_BYTES + 3) }), { reasoning: "medium" }).result();
     await waitForRequestMetrics((entry) => entry.errorCategory === "system_prompt_budget");
     const overBudget = await createClaudeStream(DEAD_INSTALLATION)({ ...model, contextWindow: 100, maxTokens: 90 }, context, { reasoning: "medium" }).result();
     await waitForRequestMetrics((entry) => entry.errorCategory === "context_budget");
@@ -1520,7 +1524,7 @@ test("the system-prompt budget is measured after Pi's payload hook", async () =>
     assert.match(inflated.errorMessage ?? "", /system prompt alone needs about \d+ tokens/);
     // The reverse direction proves the caller's own prompt is not what is
     // measured: a hook that replaces an oversized prompt must let the request run.
-    await createClaudeStream(DEAD_INSTALLATION)(BUDGET_MODEL, { ...context, systemPrompt: oversized }, { reasoning: "medium", onPayload: (payload) => ({ ...payload, systemPrompt: "small" }) }).result();
+    await createClaudeStream(DEAD_INSTALLATION)(BUDGET_MODEL, providerContext({ tools: [], systemPrompt: oversized }), { reasoning: "medium", onPayload: (payload) => ({ ...payload, systemPrompt: "small" }) }).result();
     const metrics = await waitForRequestMetrics((entry) => entry.errorCategory !== "system_prompt_budget");
     assert.notEqual(metrics.errorCategory, "system_prompt_budget");
     assert.notEqual(metrics.lastPhase, "payload_applied");

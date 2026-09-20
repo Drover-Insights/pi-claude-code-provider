@@ -51,16 +51,18 @@ Two contracts are easy to break silently:
 
 | Component | Verified baseline |
 | --- | --- |
-| Pi | 0.85.1, npm distribution; standalone tar.gz bridge live-verified on Linux x64 |
+| Pi | 0.86.1, npm distribution; standalone tar.gz bridge live-verified on Linux x64 |
 | Claude Code | 2.1.270 |
 | Node.js | 24.16.0 on WSL2, Ubuntu CI, and Apple Silicon macOS CI; 22.23.1 on Ubuntu CI and Windows CI |
 | Platform | WSL2 Ubuntu/Linux x64; native Windows x64; macOS (deterministic CI) |
 
-### Pi provider contexts in 0.85.1 and 0.86.1
+### Pi provider contexts
 
-Pi 0.85.1 gives custom providers a `Context` with top-level `systemPrompt` and active `tools`. Pi 0.86.0 and 0.86.1 give them a normalized `TranscriptContext`: system messages carry the prompt, sections, and tool additions/removals. `src/provider.ts` detects those messages and uses the host Pi-AI replay helpers to recover the current prompt and tools, then removes system messages from the conversation sent to the existing serializer. The recovered prompt is used for cwd routing **before** `before_provider_request`; that hook still receives the package's logical top-level payload. Pi 0.85.1 has no replay helpers, so its old context path remains unchanged, including contexts with no prompt or tools. A transcript message on a host without the helpers fails with `content_shape` before routing or launch.
+Pi gives custom providers a normalized `TranscriptContext`: system messages carry the prompt, sections, and tool additions/removals. The public `Context` shorthand, top-level `systemPrompt` and `tools`, is folded into those messages by Pi-AI's `normalizeContext()` before any provider is reached, and `TranscriptContext` is brand-typed so a raw `Context` cannot arrive by accident. `src/provider.ts` uses the host Pi-AI replay helpers to recover the current prompt and tools, then removes system messages from the conversation sent to the existing serializer. An empty recovery collapses to `undefined` rather than `""` or `[]`, so the logical payload keeps its "absent" shape. The recovered prompt is used for cwd routing **before** `before_provider_request`; that hook still receives the package's logical top-level payload.
 
-The 0.86.1 source contract, deterministic tests, and capped Sonnet-low tool round trips on npm and standalone Pi have been checked. These do not exercise Haiku, cache reuse, or the full release matrix, so the verified baseline above remains 0.85.1. Before advancing it, run a separately authorized full release gate on the exact target build, including Sonnet and Haiku cache probes. Inspect the matching Pi provider types, replay helpers, agent-loop call path, and side-Agent callers on any later contract change.
+Provider-facing tests must build their fixtures through `normalizeContext()` for the same reason. A hand-built pre-normalization context still runs, but its `systemPrompt` and `tools` land where the provider never reads them, so the test passes while measuring nothing.
+
+Inspect the matching Pi provider types, replay helpers, agent-loop call path, and side-Agent callers on any later contract change.
 
 Pi's distribution is part of the baseline: the npm build runs on Node, the standalone tar.gz build is a compiled Bun binary, and `process.execPath` means something different on each. `scriptLaunch` in `src/host-runtime.ts` owns that difference. It sets `BUN_BE_BUN=1` so a compiled Pi runs the proposal bridge instead of its own entry point, and pins `--config=` to a neutral `bunfig.toml` in the private request directory: Pi's `--no-compile-autoload-bunfig` does not survive `BUN_BE_BUN`, so a `bunfig.toml` in the bridge's working directory would otherwise preload code into it. Keep the joined `--config=` form, because Bun ignores a space-separated one and then consumes the script path. The mechanism is part of the embedded Bun runtime on every standalone target. Record a standalone baseline only after `npm run test:paid:bridge-standalone` passes against that exact build.
 
