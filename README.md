@@ -64,7 +64,7 @@ It names the concrete model each alias is currently served, alongside the resolv
 
 Run `/pi-claude-code-provider-doctor report` to write a bounded, content-free JSON diagnostic report in a private temporary directory. Inspect the report before sharing it.
 
-The package also registers `pi_claude_code_provider_web_search`, a visible Pi tool that runs Claude with only WebSearch and WebFetch. Searches always run Sonnet at medium effort under a three-minute limit, whichever model Pi is set to, so they draw on Sonnet capacity rather than the selected model's. It is skipped with a warning if another extension already owns that name. Truncated full results are removed at session shutdown.
+The package also registers `pi_claude_code_provider_web_search`, a visible Pi tool that runs Claude with only WebSearch and WebFetch. Searches always run Sonnet at medium effort under a three-minute limit, whichever model Pi is set to, so they draw on Sonnet capacity rather than the selected model's. If search is unavailable, check Pi's tool filters; the tool is skipped with a warning if another extension already owns its name. Truncated full results are removed at session shutdown.
 
 ## Subscription usage
 
@@ -106,21 +106,12 @@ Pi packages run with the user's permissions; review the source before installati
 
 For side requests whose session ID this extension did not register, the provider trusts a cwd declaration in the original system prompt. This is a cooperative convention, not authenticated metadata: a caller-controlled prompt can select an existing directory. A tool-bearing direct Agent without a recognized declaration fails by default, even when only one provider session is registered. Pi's provider callback has no per-request cwd field.
 
-- **Provider missing:** run the doctor, correct the reported problem, then run `/reload`.
-- **Authentication rejected:** run `claude auth status` and log in with an eligible first-party subscription. Logins made with `claude setup-token` through `CLAUDE_CODE_OAUTH_TOKEN` are not forwarded to Claude and are unsupported.
-- **Compatibility warning:** compare the installed versions with [DEVELOPING.md](DEVELOPING.md#compatibility-baseline). To acknowledge an unverified platform without changing its verification status, launch with e.g. `PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM=linux/arm64 pi`. This hides that platform's startup advisory only; unset the variable to restore it. It is not evidence that live validation passed.
-- **Search unavailable:** allow `pi_claude_code_provider_web_search` in Pi's tool filters and check for a name collision.
-- **`pi auth check` reports `provider_not_found`:** that command does not load extensions, so it cannot see any extension-registered provider. Use `/pi-claude-code-provider-doctor` to check readiness.
-- **Tool proposals never arrive, or requests fail with `mcp_startup`:** run `/pi-claude-code-provider-doctor`. It reports the exact bridge argument vector and whether the handshake completed. Raising `PI_CLAUDE_CODE_PROVIDER_MCP_READY_TIMEOUT_MS` only helps when the handshake succeeds but is slow.
-- **Every request fails naming `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT` or too many `cache_control` blocks:** a Claude Code release added a prompt-cache breakpoint of its own and left no room for the provider's. Restart Pi with `PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT=off` to keep working without prompt caching, and report the Claude Code version.
-- **A turn fails with a mid-response interruption:** Claude Code's API stream was interrupted after the response started. The provider stops and reports it so Pi's own retry can re-run the turn from the same context, which is a prompt-cache hit; the retry is governed by Pi's `retry` settings rather than by this package. A cause that repeating cannot clear, such as a billing error, is reported without a retry.
-- **A response ends early with a `length` stop:** it reached the output limit. The text produced up to that point is kept.
-- **Every tool round trip is slow in a very large repository:** Claude Code counts the project's files each time it starts, and this provider starts a Claude process per tool round trip. The cost scales with the repository and no option here removes it. See [DESIGN.md](DESIGN.md#what-claude-code-adds-on-its-own).
-- **Another extension fails with `No API provider registered for api: pi-claude-code-provider-headless`, or Pi exits when one runs:** an extension running its own agent loop on a provider model reaches Pi-AI's API registry rather than Pi's model runtime. The provider now serves both, so update to this version; the caller still runs its own tools and must identify its cwd for a tool-bearing request.
-- **A request fails because the system prompt alone exceeds the model's context:** Pi's system prompt carries your project context files and one entry per loaded skill, and compaction never shrinks it. Reduce the loaded context or skills, or select a model with a larger context window. There is no separate size ceiling of the provider's own.
-- **A request fails with `working_directory`:** No Pi session has started; the selected cwd is unusable; or a tool-bearing request has no registered session and no recognized cwd declaration. The provider refuses that last case even with one registered session. The caller should declare its cwd in the system prompt, either as a `<cwd>` section, which is what Pi itself renders, or as a trailing `Current working directory: <absolute path>` line. `PI_CLAUDE_CODE_PROVIDER_BORROW_SOLE_DIRECTORY=on` restores the older sole-session borrow if you accept that it may run Claude in the wrong tree. A registered session whose prompt names another cwd is also refused.
-- **An image request fails with `image_path`:** the temporary directory's path contains a double quote, which Claude Code's attachment syntax cannot express. Point `TMPDIR` (or `TEMP` on Windows) at a directory without one.
-- **Stale Windows state after an abrupt exit or `process_cleanup` failure:** a cleanup failure deliberately retains its marked directory when Claude process death is uncertain. Stop the relevant Pi and Claude processes, locate the temporary directory (`node -p "require('node:os').tmpdir()"`, or `echo %TEMP%` when Pi is the standalone build and Node is absent), inspect package marker files, and remove only confirmed stale directories.
+### Troubleshooting
+
+- **Provider missing or unavailable:** run `/pi-claude-code-provider-doctor`, correct the problem it reports, then run `/reload`.
+- **Authentication or subscription failure:** run `claude auth status` and sign in with an eligible subscription. For rate-limit or billing errors, check your subscription limits and usage-credit settings. Logins through `CLAUDE_CODE_OAUTH_TOKEN` are unsupported.
+- **Tools fail or requests report `mcp_startup`:** run the doctor to check the tool bridge handshake.
+- **A request keeps failing:** run `/pi-claude-code-provider-doctor report` and inspect the report before sharing it. Include the exact error and steps to reproduce when [opening an issue](https://github.com/chem/pi-claude-code-provider/issues).
 
 ## Development and license
 
