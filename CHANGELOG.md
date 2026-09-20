@@ -4,41 +4,33 @@
 
 ### Changed
 
-- **Breaking.** Pi 0.86.1 is now the minimum supported version, raised from 0.85.1, because Pi 0.86 changed the shape it hands custom providers: the system prompt and tool declarations moved into transcript system messages. Upgrade Pi before upgrading this package. The floor is advisory rather than enforced -- installing and running on an older Pi is not blocked, and `/pi-claude-code-provider-doctor` reports when your Pi falls below it -- but requests on Pi 0.85.1 are no longer supported or tested.
-- The validated baseline is now Claude Code 2.1.278; `/pi-claude-code-provider-doctor` reports a matching install as verified rather than untested. The minimum supported version is unchanged at 2.1.270.
-- In the optional metrics log, `imageCount` now counts image content blocks rather than the files written for them, so it matches the number an "At most 20 images" rejection actually counted. Identical images are still stored and sent once. The log's schema version is now 5.
+- **Breaking.** Pi 0.86.1 is now the minimum supported version; upgrade Pi before this package. Older versions can still load, but are unsupported and flagged by the doctor. Pi 0.85.1 is no longer tested.
+- Haiku no longer offers Pi effort levels or sends `--effort` to Claude Code. Claude Code may still use its default extended thinking even when Pi displays thinking as off.
+- Claude Code 2.1.278 is now the validated baseline; the minimum supported version remains 2.1.270.
+- Optional metrics log schema 5 counts image content blocks in `imageCount`, matching the 20-image limit rather than the number of stored files.
 
 ### Added
 
-
-- `PI_CLAUDE_CODE_PROVIDER_BORROW_SOLE_DIRECTORY=on` explicitly restores sole-session cwd borrowing for tool-bearing side requests that provide no recognized cwd. It can run Claude in another Agent's directory and is off by default.
-- The doctor reports whether the last request used a registered session, a Pi prompt declaration, a tool-free summary borrow, or the explicit sole-session compatibility borrow.
-- `/pi-claude-code-provider-doctor` reports how much of the last request Claude reused from its prompt cache, and says so plainly when an established conversation reused almost nothing. Losing cache reuse is otherwise silent: turns simply get slower and cost more. One low reading is not a diagnosis, and the doctor says that too.
-- `/pi-claude-code-provider-doctor` names a model whose context window Claude Code has stopped serving at the size this package advertises. The size checks that reject an over-large request before it is sent use the advertised value, so a quieter window would let a request through that the API then refuses mid-answer.
+- `PI_CLAUDE_CODE_PROVIDER_BORROW_SOLE_DIRECTORY=on` restores sole-session cwd borrowing for tool-bearing side requests without a recognized cwd. It is off by default because the borrowed directory may be wrong.
+- The doctor now reports how the last request's directory was chosen, its prompt-cache reuse, and any mismatch between served and configured context windows.
+- Maintainers can capture stream-recovery cases without quota using `npm run capture:claude-stream-recovery`; `test:paid:compat-npm` and `test:paid:compat-standalone` check both Pi distributions.
 
 ### Fixed
 
-
-- Requests now recover the current prompt and active tools from Pi's transcript system messages, including section edits and tool additions/removals. Tool-call argument types also match Pi's new JSON-compatible contract.
-- Tool-bearing requests with no registered session or recognized cwd declaration now fail with `working_directory` instead of silently borrowing the only registered session's cwd. This prevents a pi-subagents child watchdog in another worktree from running Claude in the parent checkout; its separate review remains unavailable until pi-subagents passes a recognized cwd, or the operator explicitly enables compatibility borrowing. Ordinary child turns retain Pi's generated cwd route.
-- A tool-free request that gains tools in `before_provider_request` is refused before launch regardless of session count, including requests using Pi's transcript system messages.
-- Session-backed image requests reject a quoted temporary path before creating or writing the image store; correcting the temporary root lets the same session attach images.
-- The doctor bridge probe requires a clean child exit and reports termination failures while retaining marked state when liveness is unknown.
-- Provider timeout settings above Node's maximum timer delay now fail before launch instead of silently becoming approximately 1 ms.
-- Failed process-tree cleanup now retains private request state and session images even when the Claude leader has already exited. POSIX stale recovery also checks the remaining process group before reclaiming that state.
-- Stale image recovery now inspects all package directories and limits deletion attempts separately, so more than 256 leftover image stores no longer prevent recovery from making progress.
-- Quitting Pi while a turn is running no longer waits for that turn to finish. Pi asks its extensions to shut down before it stops the turn, and waits for them, so this package's image-store cleanup was waiting for a request nothing had yet cancelled: `/quit`, Ctrl+D and a terminated Pi all hung until Claude finished answering or the request timed out. Shutdown now leaves the session's image directory to the request still writing to it, and that request removes it when it finishes.
-- Starting a session no longer reports an extension error in Pi's RPC mode. Pi loads extensions twice for a new, resumed, forked or cloned session there, and the second pass hit this package's own check that a session had closed before the next one opened. Nothing was lost — the first pass had already registered the session — but the error was reported on every one of those transitions.
-- A reply that reached the output limit is no longer discarded when Claude Code finishes and exits on its own first. It ended the turn with "output limit handoff exited unexpectedly" in that case, throwing away a complete answer you had already paid for.
-- Another extension running its own agent loop on a provider model no longer exits Pi. Those calls, and `completeSimple`, resolve the model through Pi-AI's API registry, which this provider did not serve, and Pi does not catch the resulting failure. They now reach the same provider and cwd routing rules; the calling extension still runs any tool itself. Pi-AI describes the entrypoint carrying that registry as temporary, so a Pi release that removes it costs only these side requests rather than the whole provider.
-- A Pi session ending no longer fails a request that was already running elsewhere. With several sessions in one process, a request placed on a session's image store could fail with `image_path` when that session exited while the request was still being prepared — even when the request carried no images.
-- Requests from parallel Pi sessions now each run in their own working directory. With more than one session in a process — most visibly another extension running its own agent loop — requests could run Claude in another session's project while Pi's own tools worked in theirs, and a session outliving the one that registered the provider stopped working altogether. Each session's image store and rate-limit notices are now its own too. A caller with a Pi cwd declaration runs in that directory; markerless tool-bearing requests now fail by default as described above.
-- Thinking is visible again. Claude 5, Opus, and Haiku returned thinking blocks with no text in them, so a turn spent reasoning tokens Pi could not show; the provider now asks for summarized thinking. `PI_CLAUDE_CODE_PROVIDER_THINKING_DISPLAY=omitted` hides thinking text again, which reaches the first reply text sooner and keeps later requests smaller.
-- Compaction, branch summaries, and turn-prefix summaries no longer pay for a prompt-cache entry nothing reads. Pi asks the provider not to cache these one-shots; the provider ignored that and wrote a one-hour entry for the whole summarized conversation, at twice the usual cache-write rate.
-- A turn interrupted mid-response is retried instead of lost. When Claude Code's API stream failed after the response had started, the request failed with `Claude emitted duplicate message_start` or `Claude result arrived with unclosed content blocks`, which Pi could not recognize as retryable. The provider now stops Claude and reports the interruption in wording Pi's `retry` settings act on, so Pi re-runs the turn from the same context; the replay is a prompt-cache hit, so only the reply is produced twice. A cause that repeating cannot clear, such as a billing error, is still reported without a retry.
-- A response that reaches the output limit now ends with a `length` stop and keeps its text. It previously failed the same way, because Claude Code answers the limit with a continuation turn of its own.
-- An API error that arrives with an unfinished content block reports the API error instead of `Claude result arrived with unclosed content blocks`, which hid it.
-- A connection dropped inside a tool call's streamed arguments is reported as the interruption it is, rather than as invalid tool arguments, so it is retried too.
+- Requests recover the current prompt and tools from Pi's transcript system messages, including later edits. Tool-call arguments follow Pi's JSON-compatible type.
+- Parallel Pi sessions use their own working directories, image stores, and rate-limit notices. Ending one session no longer fails a request already running through another.
+- Tool-bearing side requests without a registered session or recognized cwd now fail with `working_directory` instead of borrowing another session's directory. A tool-free request that gains tools in `before_provider_request` is also refused before launch.
+- Image requests reject a temporary path containing a double quote before writing to the session image store; correcting the path lets the session continue.
+- The doctor bridge probe reports an unsuccessful child exit and retains private state when process liveness is uncertain.
+- Invalid timeout settings above Node's timer limit fail before launch instead of expiring almost immediately.
+- Failed process-tree cleanup retains private state while a child may still be alive. Stale image recovery now makes progress even with more than 256 leftover stores.
+- Quitting Pi during a turn no longer waits for Claude to finish. Its image directory remains available to the active request for deferred cleanup.
+- New, resumed, forked, and cloned RPC sessions no longer report an extension error when Pi binds the session twice.
+- Responses that reach the output limit keep their text and end with a `length` stop, including when Claude Code exits before the provider stops it.
+- Other extensions can run their own agent loops or call `completeSimple` with this provider without exiting Pi; they use the same cwd routing rules.
+- Thinking summaries are visible in Pi again. Set `PI_CLAUDE_CODE_PROVIDER_THINKING_DISPLAY=omitted` to hide the text.
+- Compaction and other one-shot summaries no longer write a prompt-cache entry they cannot reuse.
+- Mid-response interruptions, including drops inside streamed tool arguments, are reported as retryable failures under Pi's retry settings. API errors take precedence over unfinished-block errors.
 
 ## [0.3.0] - 2026-09-13
 
