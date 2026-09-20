@@ -73,9 +73,8 @@ export async function closeLiveRpcProcess(child, supervisor, closed, graceMs = 2
  * error (usage credits off, a rate limit, a lost login) carries no text, so its
  * error is reported by name instead of failing a reply assertion on "".
  *
- * Every live and paid stage reads its replies through here, so the empty-thinking
- * check belongs here rather than at each call site: the model matrix runs it for
- * every alias and effort, which is the surface the defect appeared on.
+ * RPC probes and the model matrix read replies here. Reject empty, non-redacted
+ * thinking text so those stages catch a broken summarized-display response.
  */
 export function assistantReply(events, label) {
   const message = events.filter((event) => event.type === "message_end" && event.message?.role === "assistant").at(-1)?.message;

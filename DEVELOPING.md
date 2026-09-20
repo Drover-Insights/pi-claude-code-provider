@@ -24,7 +24,7 @@ pi install /absolute/path/to/pi-claude-code-provider
 
 | Change area | Owning modules | Focused validation |
 | --- | --- | --- |
-| Extension startup, session lifetime, and session working directory | `extensions/index.ts` (manifest entry), `extensions/pi-claude-code-provider.ts` | `extension.test.js` |
+| Extension startup, session lifetime, and session working directory | `extensions/index.ts` (manifest entry), `extensions/pi-claude-code-provider.ts`, `src/session-registry.ts`, `src/session-image-store.ts` | `extension.test.js`, `session-registry.test.js`, `session-image-store.test.js` |
 | Authentication, CLI, model catalog, and compatibility | `src/auth.ts`, `src/catalog.ts`, `src/claude-args.ts`, `src/compatibility.ts` | `auth.test.js`, `catalog.test.js`, `claude-args.test.js`, `compatibility.test.js` |
 | Transcript and provider lifecycle | `src/context-serializer.ts`, `src/provider.ts`, `src/stream-events.ts`, `src/claude-protocol.ts`, `src/jsonl.ts`, `src/output.ts`, `src/errors.ts`, `src/types.ts` | `context-serializer.test.js`, `provider.test.js`, `stream-events.test.js`, `claude-protocol.test.js`, `jsonl.test.js`, `errors.test.js` |
 | Runtime launch, process trees, and private state | `src/claude-process.ts`, `src/host-runtime.ts`, `src/process-utils.ts`, `src/runtime-directories.ts` | `process-utils.test.js`, `runtime-directories.test.js` |
@@ -72,7 +72,7 @@ A platform is live-verified only after `npm run test:paid:release` passes on it.
 
 `test/support/captured/claude-<version>-help.txt` is `claude --help` captured byte-for-byte from the version `CAPTURED_CLAUDE_VERSION` in `test/support/claude-fixture.js` names. `validateClaudeCapabilities` decides whether the provider registers at all, so it is tested against help the CLI really emits rather than a hand-written list, which can spell flags the real help never shows.
 
-Recapture with `npm run capture:claude-surface`, then point `CAPTURED_CLAUDE_VERSION` at the new file and review the diff. Re-pin deliberately, as part of moving the verified baseline — the diff on a CLI upgrade is the point of committing the artifact.
+Compare the installed CLI's help with the pinned capture when moving the verified baseline. If it changes, run `npm run capture:claude-surface`, review the diff, and re-pin `CAPTURED_CLAUDE_VERSION`. The capture may remain on an older version when the help is identical.
 
 ### Captured stream-recovery records
 
@@ -90,7 +90,7 @@ Recapture with `npm run capture:claude-surface`, then point `CAPTURED_CLAUDE_VER
 
 ### Paid tests
 
-Subscription-consuming commands are named `test:paid:*`. They show the detected subscription, request caps, and quota/spend warning, then require the exact phrase `USE PAID CLAUDE QUOTA`. Noninteractive execution additionally requires `PI_CLAUDE_CODE_PROVIDER_CONFIRM_PAID_TESTS=1`. The underlying scripts refuse direct invocation, perform no automatic retries, and atomically claim a stage and aggregate slot before every provider or web-search Claude launch.
+Subscription-consuming commands are named `test:paid:*`. They show the detected subscription, request caps, and quota/spend warning. Set `PI_CLAUDE_CODE_PROVIDER_CONFIRM_PAID_TESTS=1` to confirm in either mode; otherwise an interactive terminal requires the exact phrase `USE PAID CLAUDE QUOTA`. Noninteractive runs require the variable. The underlying scripts refuse direct invocation, perform no automatic retries, and atomically claim a stage and aggregate slot before every provider or web-search Claude launch.
 
 The runner gives Pi a temporary agent directory and disables automatic extension, skill, context-file, and prompt-template loading. Only the explicitly selected provider package is loaded. Both controls matter: `PI_CODING_AGENT_DIR` alone does not suppress `~/.agents/skills`. Keep personal skill directories in place; tests must not depend on moving them. Claude subscription authentication and organization-managed policy remain available.
 
@@ -116,11 +116,11 @@ Run paid stages one at a time. `model-matrix.js` checks for leaked private state
 
 The tool steps need only the shell Pi's `bash` tool uses: on Windows, Git Bash at `%ProgramFiles%\Git\bin\bash.exe` or a `bash.exe` on `PATH`. They run shell scripts rather than an interpreter such as Python, so a gate result never depends on what else is installed, and `test:paid:full` checks for that shell before its first Claude launch.
 
-`PI_CLAUDE_CODE_PROVIDER_PI_BIN` selects which Pi executable the live scripts launch; without it they launch the CLI entry of the development Pi described under Setup. This is deliberately separate from package resolution, so one npm-hosted development host can drive both distributions. `bridge-standalone` refuses to start unless that variable is set; point it at an extracted tar.gz `pi`.
+`PI_CLAUDE_CODE_PROVIDER_PI_BIN` selects which Pi executable the live scripts launch; without it they launch the CLI entry of the development Pi described under Setup. This is deliberately separate from package resolution, so one npm-hosted development host can drive both distributions. The `compat-standalone` and `bridge-standalone` stages require the variable; point it at an extracted tar.gz `pi`.
 
 Both bridge lanes are required, and `test:paid:release` runs both. A `--no-tools` turn passes even when the proposal bridge never starts, so only a turn that actually round-trips a tool distinguishes a working bridge from a broken one. `/pi-claude-code-provider-doctor` performs the same handshake without consuming quota.
 
-Every live stage fails a turn whose thinking arrived with no text, because Claude Code returns exactly that when a release stops honouring the summarized-display request, and the turn otherwise succeeds. Redacted thinking is exempt; its payload is the signature. Adaptive thinking may skip a turn, so the check cannot be unconditional: the cache probe and the model matrix report whether thinking text was seen at all, alongside the reasoning tokens that say which it was. Absent text with zero reasoning tokens is a turn that declined to think and never exercised the check; absent text against a non-zero count is the defect. Measured on 2026-09-18: `opus:medium` and `sonnet:low` both spend zero reasoning tokens on these stages' one-exact-word prompts, so only the provider journey in `test:paid:full` is substantive enough to exercise the check, and the print-mode stages (`smoke`, `bridge`, most of `full`) do not read replies through it at all.
+RPC stages that read replies through `assistantReply` fail on non-redacted thinking blocks with empty text. Print-mode stages do not use that check. Adaptive thinking can skip a turn, so the cache probe and model matrix also report whether thinking text appeared and how many reasoning tokens were used; a turn with no reasoning tokens did not exercise the check.
 
 The release suite covers text, tool, image, isolation, recovery, Unicode, history, web search, cache reuse, both bridge lanes, the gated aliases, and the supported effort matrix. Successful RPC harnesses close stdin so Pi can run session shutdown and flush metrics before exit. The model matrix asserts the family an alias serves, not a dated model id, so an upstream model refresh cannot fail the gate while an alias serving the wrong family still does. Every entry also checks context/output capabilities, cleanup, and the absence of leaked private directories. Pro's `opus` entry retains the conservative 200K context limit.
 
