@@ -5,6 +5,7 @@
 ### Changed
 
 - **Breaking.** Pi 0.86.1 is now the minimum supported version, raised from 0.85.1, because Pi 0.86 changed the shape it hands custom providers: the system prompt and tool declarations moved into transcript system messages. Upgrade Pi before upgrading this package. The floor is advisory rather than enforced -- installing and running on an older Pi is not blocked, and `/pi-claude-code-provider-doctor` reports when your Pi falls below it -- but requests on Pi 0.85.1 are no longer supported or tested.
+- The validated baseline is now Claude Code 2.1.278; `/pi-claude-code-provider-doctor` reports a matching install as verified rather than untested. The minimum supported version is unchanged at 2.1.270.
 - In the optional metrics log, `imageCount` now counts image content blocks rather than the files written for them, so it matches the number an "At most 20 images" rejection actually counted. Identical images are still stored and sent once. The log's schema version is now 5.
 
 ### Added

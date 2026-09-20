@@ -52,7 +52,7 @@ Two contracts are easy to break silently:
 | Component | Verified baseline |
 | --- | --- |
 | Pi | 0.86.1, npm distribution; standalone tar.gz bridge live-verified on Linux x64 |
-| Claude Code | 2.1.270 |
+| Claude Code | 2.1.278 |
 | Node.js | 24.16.0 on WSL2, Ubuntu CI, and Apple Silicon macOS CI; 22.23.1 on Ubuntu CI and Windows CI |
 | Platform | WSL2 Ubuntu/Linux x64; native Windows x64; macOS (deterministic CI) |
 
