@@ -27,7 +27,7 @@ test("a live assistant reply fails when thinking arrived without its text", () =
 
   // Redacted thinking is empty by construction: its payload is the signature.
   const redacted = { type: "thinking", thinking: "", thinkingSignature: "opaque", redacted: true };
-  assert.equal(assistantReply(end([redacted, text]), "haiku:low").content[0], redacted);
+  assert.equal(assistantReply(end([redacted, text]), "haiku").content[0], redacted);
   assert.equal(assistantReply(end([{ type: "thinking", thinking: "reasoned" }, text]), "sonnet:low").content[1], text);
 
   // Adaptive thinking may skip a turn, so absence passes and is reported instead.

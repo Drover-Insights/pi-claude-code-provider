@@ -60,6 +60,17 @@ test("every advertised alias is passed to Claude verbatim", () => {
     }
 });
 
+test("Haiku uses Claude Code's default thinking without an effort flag", () => {
+    const prepared = { transcriptBlocks: [], attachmentPaths: [], systemPromptPath: "/tmp/system.txt" };
+    for (const requested of ["off", "low", "high", "default"]) {
+        const { args } = providerArgs(prepared, "haiku", requested, { thinkingDisplay: "summarized" });
+        assert.equal(args.includes("--effort"), false);
+        assert.equal(args[args.indexOf("--thinking-display") + 1], "summarized");
+    }
+    const { args } = providerArgs(prepared, "sonnet", "low");
+    assert.equal(args[args.indexOf("--effort") + 1], "low");
+});
+
 test("pins cache-stable Claude settings", () => {
     const args = baseClaudeArgs();
     const settings = JSON.parse(args[args.indexOf("--settings") + 1]);

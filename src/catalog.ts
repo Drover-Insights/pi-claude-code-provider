@@ -21,8 +21,8 @@ function providerModel(
   return {
     id,
     name,
-    reasoning: true,
-    thinkingLevelMap: EFFORT_LEVELS,
+    // Haiku has no effort control. Claude Code still owns its thinking default.
+    ...(id === "haiku" ? { reasoning: false } : { reasoning: true, thinkingLevelMap: EFFORT_LEVELS }),
     input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow,

@@ -64,7 +64,7 @@ const PNG = Buffer.from(
 );
 
 function parseOptions(argv) {
-  const options = { model: "sonnet", effort: "low", images: 0, tools: true, marker: true, claude: undefined, output: undefined };
+  const options = { model: "sonnet", effort: "low", effortExplicit: false, images: 0, tools: true, marker: true, claude: undefined, output: undefined };
   for (let index = 0; index < argv.length; index++) {
     const flag = argv[index];
     const value = () => {
@@ -73,7 +73,7 @@ function parseOptions(argv) {
       return next;
     };
     if (flag === "--model") options.model = value();
-    else if (flag === "--effort") options.effort = value();
+    else if (flag === "--effort") { options.effort = value(); options.effortExplicit = true; }
     else if (flag === "--images") options.images = Number.parseInt(value(), 10);
     else if (flag === "--claude") options.claude = value();
     else if (flag === "--output") options.output = value();
@@ -84,6 +84,7 @@ function parseOptions(argv) {
     else throw new Error(`Unknown option: ${flag}`);
   }
   if (!Number.isInteger(options.images) || options.images < 0) throw new Error("--images requires a non-negative integer");
+  if (options.model === "haiku" && options.effortExplicit) throw new Error("Haiku does not support --effort");
   return options;
 }
 

@@ -48,7 +48,7 @@ To select one directly:
 
 The same canonical reference works from the command line with `pi --model pi-claude-code-provider/sonnet`.
 
-Pi maps its exposed thinking levels to Claude's `low`, `medium`, `high`, `xhigh`, and `max` effort values; unsupported levels are hidden. Opus uses a 200K context window on Pro and 1M on Max, Team, and Enterprise. The provider retains 200K on Pro even when Claude Code reports a 1M-capable variant, because it cannot determine credit availability.
+Sonnet, Fable, and Opus expose Pi thinking levels that map to Claude's `low`, `medium`, `high`, `xhigh`, and `max` effort values. Haiku has no effort control here; Claude Code may still use its default extended thinking even when Pi displays thinking as off. Opus uses a 200K context window on Pro and 1M on Max, Team, and Enterprise. The provider retains 200K on Pro even when Claude Code reports a 1M-capable variant, because it cannot determine credit availability.
 
 The `fable` alias is offered and separately testable, but it is excluded from the paid release gate. Fable availability, included allocation, and billing vary by subscription tier. It otherwise follows the standard alias path wherever the account allows it. See Anthropic's [Fable plan policy](https://support.claude.com/en/articles/15424964-claude-fable-5-on-your-plan).
 

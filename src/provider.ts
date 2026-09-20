@@ -112,7 +112,7 @@ export function createClaudeStream(
 
     void (async () => {
       const startedAt = Date.now();
-      const effort = options?.reasoning ?? "medium";
+      const effort = model.id === "haiku" ? "default" : options?.reasoning ?? "medium";
       let prepared: Awaited<ReturnType<typeof prepareRequest>> | undefined;
       let claude: ClaudeProcess | undefined;
       let cwd: string | undefined;

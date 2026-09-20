@@ -590,6 +590,26 @@ process.stdin.on("end", () => {
         await rm(fake.dir, { recursive: true, force: true });
     }
 });
+test("Haiku omits effort while recording Claude Code's default", async () => {
+    const fake = await fakeClaude(`
+fs.writeFileSync(require("node:path").join(__dirname, "argv.json"), JSON.stringify(process.argv.slice(2)));
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify(${JSON.stringify(init)}) + "\\n");
+  process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"haiku ok",usage:{},modelUsage:{haiku:{contextWindow:200000,maxOutputTokens:32000}}}) + "\\n");
+});`);
+    try {
+        const haiku = { ...model, id: "haiku", name: "Haiku", reasoning: false, contextWindow: 200_000, maxTokens: 32_000 };
+        const result = await createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" })(haiku, context, { reasoning: "off" }).result();
+        assert.equal(result.stopReason, "stop", result.errorMessage);
+        const args = JSON.parse(await readFile(join(fake.dir, "argv.json"), "utf8"));
+        assert.equal(args.includes("--effort"), false);
+        const metrics = await waitForRequestMetrics((entry) => entry.requestedModel === "haiku" && entry.stopReason === "stop");
+        assert.equal(metrics.effort, "default");
+    } finally {
+        await rm(fake.dir, { recursive: true, force: true });
+    }
+});
 test("provider rejects a model without a usable output maximum before claiming a launch", async () => {
     let claims = 0;
     const invalidModel = { ...model, maxTokens: undefined };
