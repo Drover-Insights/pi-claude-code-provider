@@ -196,6 +196,30 @@ test("the default package extension preserves ambient single-account behavior wh
     }
 });
 
+test("the default package extension treats an empty private configuration setting as unset", async () => {
+    const { directory, executable } = await createFakeClaude();
+    const originalExecutable = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    const originalConfiguration = process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        for (const value of ["", "   "]) {
+            process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = value;
+            const pi = fakePi();
+
+            await implementation(pi.api);
+
+            assert.deepEqual([...pi.providers.keys()], ["pi-claude-code-provider"]);
+            assert.ok(pi.commands.has("pi-claude-code-provider-doctor"));
+        }
+    } finally {
+        if (originalExecutable === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = originalExecutable;
+        if (originalConfiguration === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = originalConfiguration;
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
 test("the default package extension rejects a non-private configuration file without disclosing its path", { skip: process.platform === "win32" }, async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-"));
     const configurationPath = join(directory, "instances.json");
