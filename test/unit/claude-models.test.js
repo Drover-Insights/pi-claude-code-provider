@@ -13,9 +13,14 @@ import { CAPTURED_CLAUDE_VERSION } from "../support/claude-fixture.js";
 // that would reintroduce exactly the version coupling this project removed when
 // EXPECTED_MODEL_FAMILIES replaced dated ids. Change them only to cover a new
 // table *shape*.
-const ALIAS_TABLE = 'sonnet:{default:"claude-sonnet-5",per_provider:{gateway:"claude-sonnet-4-6"}},'
+const ALIAS_TABLE = 'aliases:{sonnet:{default:"claude-sonnet-5",per_provider:{gateway:"claude-sonnet-4-6"}},'
     + 'opus:{default:"claude-opus-5"},haiku:{default:"claude-haiku-4-5"},'
-    + 'fable:{default:"claude-fable-5-1",per_provider:{gateway:"claude-fable-5"}}';
+    + 'fable:{default:"claude-fable-5-1",per_provider:{gateway:"claude-fable-5"}}}';
+
+// Claude Code 2.1.280 also bundles other products' alias tables, which name
+// different models than the CLI's own `aliases:{...}` catalog serves.
+const FOREIGN_TABLE = 'provider_alias_targets:{haiku:{default:"claude-haiku-4-5-20251001"},'
+    + 'opus:{default:"claude-opus-4-9",per_provider:{bedrock:"claude-opus-4-9"}},sonnet:{default:"claude-sonnet-4-9"}}';
 
 function installation(executable) {
     return { executable, version: CAPTURED_CLAUDE_VERSION, subscriptionType: "pro" };
@@ -75,13 +80,72 @@ test("finds a table that straddles a read-chunk boundary", async () => {
     }
 });
 
+test("reads only the CLI's own catalog, not other products' alias tables", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-models-foreign-"));
+    try {
+        const versions = await scan(directory, Buffer.from(
+            `${FOREIGN_TABLE} ${ALIAS_TABLE} ${FOREIGN_TABLE} aliases:{opus:Sn(u.aliasTargets.opus,Z.opus)}`,
+            "latin1",
+        ));
+        assert.deepEqual(versions, {
+            sonnet: "claude-sonnet-5",
+            fable: "claude-fable-5-1",
+            opus: "claude-opus-5",
+            haiku: "claude-haiku-4-5",
+        });
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("reports nothing when only other products' alias tables are present", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-models-no-catalog-"));
+    try {
+        assert.deepEqual(await scan(directory, Buffer.from(
+            `${FOREIGN_TABLE} opus:{default:"claude-opus-5"} model_aliases:{opus:{default:"claude-opus-5"}}`,
+            "latin1",
+        )), {});
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("tolerates unknown keys inside the catalog", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-models-extra-key-"));
+    try {
+        const versions = await scan(directory, Buffer.from(
+            'aliases:{opusplan:{default:"claude-opus-5"},opus:{default:"claude-opus-5"},haiku:{default:"claude-haiku-4-5"}}',
+            "latin1",
+        ));
+        assert.equal(versions.opus, "claude-opus-5");
+        assert.equal(versions.haiku, "claude-haiku-4-5");
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("an unterminated catalog in binary data finishes promptly with no answer", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-models-unterminated-"));
+    try {
+        const started = Date.now();
+        const versions = await scan(directory, Buffer.concat([
+            Buffer.from('aliases:{opus:{default:"claude-opus-5",x:', "latin1"),
+            Buffer.alloc(2 * 1024 * 1024, 0x61),
+        ]));
+        assert.deepEqual(versions, {});
+        assert.ok(Date.now() - started < 2000);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
 test("treats a second distinct value for an alias as unavailable", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-models-ambiguous-"));
     try {
         // Two different values mean the table's shape changed. Reporting a
         // confident wrong version is worse than reporting nothing.
         const versions = await scan(directory, Buffer.from(
-            `${ALIAS_TABLE} sonnet:{default:"claude-sonnet-6"} opus:{default:"claude-opus-5"}`,
+            `${ALIAS_TABLE} aliases:{sonnet:{default:"claude-sonnet-6"},opus:{default:"claude-opus-5"}}`,
             "latin1",
         ));
         assert.equal(versions.sonnet, undefined);

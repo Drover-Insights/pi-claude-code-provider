@@ -66,6 +66,54 @@ Run `/pi-claude-code-provider-doctor report` to write a bounded, content-free JS
 
 The package also registers `pi_claude_code_provider_web_search`, a visible Pi tool that runs Claude with only WebSearch and WebFetch. It is skipped with a warning if another extension already owns that name. Truncated full results are removed at session shutdown.
 
+### Isolated account instances
+
+With no account-pool configuration, the default extension remains a single provider named `pi-claude-code-provider` and uses the ambient Claude configuration. A wrapper extension can register explicitly named account instances:
+
+```ts
+import { createPiClaudeCodeProvider } from "pi-claude-code-provider/extensions/index.ts";
+
+export default createPiClaudeCodeProvider({
+  instances: [
+    {
+      providerId: "claude-primary",
+      label: "primary",
+      configRoot: "/absolute/physical/path/to/primary-config",
+      expectedIdentityFingerprint: "sha256:<64 lowercase hexadecimal digits>",
+    },
+    {
+      providerId: "claude-secondary",
+      label: "secondary",
+      configRoot: "/absolute/physical/path/to/secondary-config",
+      expectedIdentityFingerprint: "sha256:<64 lowercase hexadecimal digits>",
+    },
+  ],
+  failover: {
+    providerId: "claude-auto",
+    label: "automatic",
+    order: ["claude-primary", "claude-secondary"],
+  },
+});
+```
+
+Alternatively, set `PI_CLAUDE_CODE_PROVIDER_CONFIG` to a private JSON file containing the same `instances` and `failover` object. The package's default manifest entry then loads that account pool directly. The file path must be absolute and canonical; the file and its ancestors must not be symlinks, and on POSIX it must be owned by the current user with mode `0600`. The file is limited to 64 KiB, must be valid UTF-8 JSON, and rejects unknown fields. Configuration errors never include the private file path. The variable is consumed by the provider process and is not forwarded to Claude Code.
+
+Provider IDs and labels are distinct lowercase opaque labels, not emails, account IDs, or display names. Configuration roots must be existing absolute physical directories in canonical form. Relative paths, missing directories, duplicate roots, and any root or ancestor symlink fail before the extension registers anything.
+
+Configured instances require `email` and `orgId` from `claude auth status`. These are undocumented Claude Code fields, so their presence is capability-checked and missing fields fail closed. The version 1 fingerprint is SHA-256 over this exact UTF-8 text, with the email trimmed and lowercased and the organization ID trimmed:
+
+```text
+pi-claude-code-provider:claude-auth-identity:v1
+<normalized email>
+<organization ID>
+```
+
+Only the expected hash belongs in configuration. Run `/pi-claude-code-provider-doctor` after changing an account login; its `report` mode is unavailable for configured instances. Rate-limit notices identify the affected label, and the shared web-search tool uses the first configured instance.
+
+The optional `failover` descriptor registers one additional provider backed by the ordered instances. A structured rate-limit rejection switches later requests to the next available account. The rejected request itself is retried only when it produced no assistant-visible output. Exhaustion remains sticky until Claude's reported reset time; without one, it remains sticky for the Pi process. Other failures never switch accounts, and all pool models advertise the most conservative limits shared by every member. The instance-specific providers remain available for direct selection.
+
+See [Account instance binding](DESIGN.md#account-instance-binding) for the validation, identity handling, environment binding, diagnostics, and recheck guarantees.
+
 ## Subscription usage
 
 Provider and web-search requests consume Claude subscription capacity. A cancellation received before Claude is launched starts no Claude request; a request already running can consume capacity before termination. Optional usage credits may incur additional spend after plan limits. The package reports Claude's token counts when available and reports zero monetary cost because it cannot determine how a subscription request was billed.
@@ -86,6 +134,7 @@ Images remain available to Claude throughout the current Pi context, including a
 | --- | --- |
 | `PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM` | Exact platform/architecture (for example `linux/arm64`) whose startup compatibility advisory you acknowledge and wish to hide. Unset by default. Does not mark the platform verified or hide doctor/report metadata, authentication errors, rate-limit notices, or runtime validation failures. |
 | `PI_CLAUDE_CODE_PROVIDER_PATH` | Override the `claude` executable path. |
+| `PI_CLAUDE_CODE_PROVIDER_CONFIG` | Absolute canonical path to a private mode-`0600` configured-instance and failover JSON file loaded by the default package extension. It is not forwarded to Claude Code. |
 | `PI_CLAUDE_CODE_PROVIDER_METRICS_LOG` | Append content-free request and search metrics as JSONL. |
 | `PI_CLAUDE_CODE_PROVIDER_IDLE_TIMEOUT_MS` | Override the five-minute protocol-idle timeout with positive milliseconds. |
 | `PI_CLAUDE_CODE_PROVIDER_TOTAL_TIMEOUT_MS` | Override the 30-minute total timeout with positive milliseconds. |

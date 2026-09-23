@@ -6,6 +6,7 @@ export interface ClaudeInstallation {
   executable: string;
   version: string;
   subscriptionType: ClaudeSubscriptionType;
+  configRoot?: string;
 }
 
 export interface ClaudeAuthStatus {
@@ -13,6 +14,8 @@ export interface ClaudeAuthStatus {
   authMethod?: string;
   apiProvider?: string;
   subscriptionType?: string;
+  email?: unknown;
+  orgId?: unknown;
 }
 
 export interface PreparedRequest {

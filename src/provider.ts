@@ -8,8 +8,10 @@ import type {
   Model,
   ProviderResponse,
   SimpleStreamOptions,
+  Tool,
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import * as PiAI from "@earendil-works/pi-ai";
 import { bridgeArgv, formatBridgeArgv, providerArgs, transcriptBreakpointEnabled } from "./claude-args.ts";
 import { claimClaudeLaunch, settleFailure, spawnClaudeProcess, type ClaudeProcess } from "./claude-process.ts";
 import { prepareRequest } from "./context-serializer.ts";
@@ -37,6 +39,8 @@ type ClaimLaunch = () => Promise<void>;
 export interface ClaudeStreamDependencies {
   cleanupDirectory?: CleanupDirectory;
   onRateLimitNotice?: RateLimitNoticeSink;
+  /** Internal signal that the published terminal error is solely a structured rate-limit rejection. */
+  onRateLimitRejection?: () => void;
   claimLaunch?: ClaimLaunch;
   supervise?: typeof superviseProcess;
   /**
@@ -400,13 +404,16 @@ export function createClaudeStream(
             if (mapper.completeResult()) metrics.lastPhase = "completed";
           }
         } else if (!mapper.isTerminal) {
-          errorCategory ??= mapper.rateLimitFailure ? "rate_limit" : "process_exit";
-          mapper.fail(
-            await failureAfterCleanup(
-              mapper.rateLimitFailure ??
-                `Claude Code exited before a terminal event (code ${String(result.code)}, signal ${String(result.signal)})${stderrDetail()}`,
-            ),
+          const rateLimitFailure = mapper.rateLimitFailure;
+          errorCategory ??= rateLimitFailure ? "rate_limit" : "process_exit";
+          const failure = await failureAfterCleanup(
+            rateLimitFailure ??
+              `Claude Code exited before a terminal event (code ${String(result.code)}, signal ${String(result.signal)})${stderrDetail()}`,
           );
+          if (rateLimitFailure !== undefined && failure === rateLimitFailure) {
+            dependencies.onRateLimitRejection?.();
+          }
+          mapper.fail(failure);
         }
       } catch (caught) {
         const error = vanishedWorkingDirectory(caught, cwd) ?? caught;
@@ -686,7 +693,35 @@ async function applyPayloadHook(model: Model<Api>, context: Context, options?: S
   // budget reads it before preparation; prepareRequest owns every per-message,
   // per-block, and per-tool rule.
   const replacement = await options?.onPayload?.(logical, model);
-  return validateLogicalPayload(replacement === undefined ? logical : replacement);
+  return normalizeTranscriptContext(validateLogicalPayload(replacement === undefined ? logical : replacement));
+}
+
+function normalizeTranscriptContext(context: Context): Context {
+  const compatibility = PiAI as typeof PiAI & {
+    resolveTranscript?: (context: Context, supportsMidConversationSystemMessages?: boolean) => Context;
+    getSystemMessageText?: (message: unknown) => string;
+    getDeclaredTools?: (messages: Context["messages"]) => Tool[];
+  };
+  const hasTranscriptSystemMessage = context.messages.some(
+    (message) => (message as { role?: unknown } | null)?.role === "system",
+  );
+  if (!hasTranscriptSystemMessage) return context;
+  const resolved = typeof compatibility.resolveTranscript === "function"
+    ? compatibility.resolveTranscript(context, false)
+    : context;
+  const [leading, ...messages] = resolved.messages;
+  if (
+    (leading as { role?: unknown } | undefined)?.role !== "system" ||
+    typeof compatibility.getSystemMessageText !== "function" ||
+    typeof compatibility.getDeclaredTools !== "function"
+  ) {
+    return resolved;
+  }
+  return {
+    systemPrompt: context.systemPrompt ?? compatibility.getSystemMessageText(leading),
+    messages,
+    tools: context.tools ?? compatibility.getDeclaredTools(resolved.messages),
+  };
 }
 
 function validateLogicalPayload(value: unknown): Context {
