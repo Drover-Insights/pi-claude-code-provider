@@ -2,6 +2,10 @@ import { register } from "node:module";
 import { pathToFileURL } from "node:url";
 import { locatePiPackages, packageEntry } from "../../scripts/lib/pi-installation.js";
 
+// Tests expect the default provider; a maintainer's configured instances would replace it.
+// Tests that exercise configuration set this variable themselves.
+delete process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
+
 const packages = locatePiPackages();
 register(new URL("./pi-loader-hooks.js", import.meta.url), {
   parentURL: import.meta.url,
