@@ -41,7 +41,8 @@ const CONFIGURATION_FILE_ENVIRONMENT_VARIABLE = "PI_CLAUDE_CODE_PROVIDER_CONFIG"
 
 export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<void> {
   const configurationPath = process.env[CONFIGURATION_FILE_ENVIRONMENT_VARIABLE];
-  if (configurationPath === undefined) return initializePiClaudeCodeProvider(pi);
+  // Like PI_CLAUDE_CODE_PROVIDER_PATH, an empty or whitespace value means unset.
+  if (configurationPath === undefined || !configurationPath.trim()) return initializePiClaudeCodeProvider(pi);
   const configuration = await readConfiguredProviderFile(configurationPath);
   return initializePiClaudeCodeProvider(pi, configuration.instances, configuration.failover);
 }
