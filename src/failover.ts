@@ -54,9 +54,14 @@ export function createClaudeFailoverStream(
           await responsePromise;
         },
       };
+      // Accounts skipped as exhausted or rejected during this request, in order.
+      const unavailableLabels: string[] = [];
       for (const member of members) {
         const deadline = exhaustedUntil.get(member.providerId);
-        if (deadline !== undefined && deadline > now()) continue;
+        if (deadline !== undefined && deadline > now()) {
+          unavailableLabels.push(member.label);
+          continue;
+        }
         if (deadline !== undefined) exhaustedUntil.delete(member.providerId);
 
         let rejection: RateLimitNotice | undefined;
@@ -88,6 +93,7 @@ export function createClaudeFailoverStream(
             continue;
           }
           if (!published && event.type === "error" && rejection && rateLimitTerminal && options?.signal?.aborted !== true) {
+            unavailableLabels.push(member.label);
             break;
           }
           if (!published) {
@@ -105,12 +111,9 @@ export function createClaudeFailoverStream(
           return;
         }
       }
-      const exhaustedLabels = members
-        .filter((member) => (exhaustedUntil.get(member.providerId) ?? 0) > now())
-        .map((member) => member.label);
       const output = createOutput(model);
       output.stopReason = "error";
-      output.errorMessage = `Claude accounts are rate limited: ${exhaustedLabels.join(", ")}`;
+      output.errorMessage = `Claude accounts are rate limited: ${unavailableLabels.join(", ")}`;
       outer.push({ type: "error", reason: "error", error: output });
       outer.end();
     })();

@@ -1098,6 +1098,40 @@ test("configured failover retries an account after its reported reset even when 
     }
 });
 
+test("configured failover names accounts rejected with an already-past reset", async () => {
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    // Claude reports resetsAt in Unix seconds; the failover clock is milliseconds.
+    const resetSeconds = 2_000_000_000;
+    const rejected = [{ status: "rejected", rateLimitType: "five_hour", resetsAt: resetSeconds }];
+    const { directory, executable } = await createFakeClaude("unbound", {
+        configRootRateLimitInfo: { [primaryRoot]: rejected, [secondaryRoot]: rejected },
+        rejectedConfigRoots: [primaryRoot, secondaryRoot],
+    });
+    try {
+        const installation = (configRoot) => ({ executable, version: VERIFIED_VERSIONS.claudeCode, subscriptionType: "pro", configRoot });
+        const streamSimple = createClaudeFailoverStream([
+            { providerId: "claude-primary", label: "primary", installation: installation(primaryRoot) },
+            { providerId: "claude-secondary", label: "secondary", installation: installation(secondaryRoot) },
+        ], { now: () => resetSeconds * 1000 + 60_000, workingDirectory: () => tmpdir() });
+        const configured = providerModelsForSubscription("pro").find((model) => model.id === "sonnet");
+        const model = { ...configured, provider: "claude-auto", api: "pi-claude-code-provider-headless", baseUrl: "pi-claude-code-provider://local" };
+        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+
+        const result = await streamSimple(model, context, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "error");
+        assert.equal(result.errorMessage, "Claude accounts are rate limited: primary, secondary");
+    } finally {
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
 test("configured failover reports labeled exhaustion after trying each account once", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
         mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
@@ -1134,6 +1168,11 @@ test("configured failover reports labeled exhaustion after trying each account o
         assert.match(result.errorMessage, /primary.*secondary/i);
         assert.equal(result.errorMessage.includes(primaryRoot), false);
         assert.equal(result.errorMessage.includes(secondaryRoot), false);
+        assert.deepEqual((await readFile(requestLogPath, "utf8")).trim().split("\n"), [primaryRoot, secondaryRoot]);
+        // Both accounts stay exhausted without a reset, so the next request launches
+        // nothing and still names every skipped account.
+        const skipped = await provider.streamSimple(model, context, { reasoning: "medium" }).result();
+        assert.equal(skipped.errorMessage, "Claude accounts are rate limited: primary, secondary");
         assert.deepEqual((await readFile(requestLogPath, "utf8")).trim().split("\n"), [primaryRoot, secondaryRoot]);
 
         await pi.handlers.get("session_shutdown")[0]({}, {});
