@@ -21,10 +21,10 @@ export function validateFailoverDescriptor(
   if (!failover || typeof failover !== "object") {
     throw new Error("Claude Code failover configuration must be an object descriptor");
   }
-  if (!/^[a-z][a-z0-9-]{0,63}$/.test(failover.providerId)) {
+  if (typeof failover.providerId !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(failover.providerId)) {
     throw new Error("Claude Code failover provider ID must be a lowercase opaque label");
   }
-  if (!/^[a-z][a-z0-9-]{0,63}$/.test(failover.label)) {
+  if (typeof failover.label !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(failover.label)) {
     throw new Error("Claude Code failover must use a lowercase opaque label");
   }
   const configuredIds = new Set(instances.map((instance) => instance.providerId));
@@ -61,10 +61,10 @@ export function validateInstanceDescriptors(
     const label = instance.label;
     const configRoot = instance.configRoot;
     const expectedIdentityFingerprint = instance.expectedIdentityFingerprint;
-    if (!/^[a-z][a-z0-9-]{0,63}$/.test(providerId)) {
+    if (typeof providerId !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(providerId)) {
       throw new Error("Each Claude Code provider ID must be a lowercase opaque label");
     }
-    if (!/^[a-z][a-z0-9-]{0,63}$/.test(label)) {
+    if (typeof label !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(label)) {
       throw new Error("Each Claude Code instance must use a lowercase opaque label");
     }
     if (typeof expectedIdentityFingerprint !== "string" || !/^sha256:[0-9a-f]{64}$/.test(expectedIdentityFingerprint)) {
