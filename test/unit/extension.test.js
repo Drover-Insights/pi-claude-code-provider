@@ -373,6 +373,41 @@ test("account-specific provider descriptors require distinct opaque IDs and labe
     }
 });
 
+test("configured descriptors reject provider IDs and labels that are not strings", async () => {
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    const { directory, executable } = await createFakeClaude("ok", {
+        configRootAuth: configuredAuthByRoot(primaryRoot, secondaryRoot),
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const [primary, secondary] = configuredInstances(primaryRoot, secondaryRoot);
+        const invalidConfigurations = [
+            [{ instances: [{ ...primary, providerId: ["claude-primary"] }, secondary] }, /provider ID/i],
+            [{
+                instances: [primary, secondary],
+                failover: { providerId: "claude-auto", label: ["automatic"], order: ["claude-primary", "claude-secondary"] },
+            }, /failover/i],
+        ];
+        for (const [configuration, message] of invalidConfigurations) {
+            const pi = fakePi();
+            await assert.rejects(createPiClaudeCodeProvider(configuration)(pi.api), message);
+            assert.equal(pi.providers.size, 0);
+        }
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
 test("configured failover requires a distinct provider and an ordered set of known instances", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
         mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
