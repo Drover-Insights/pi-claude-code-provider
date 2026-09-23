@@ -946,7 +946,9 @@ test("configured failover retries an unseen rate-limit rejection and sticks to t
         requestLogPath,
     });
     const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    const originalAcknowledgement = process.env.PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM;
     process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    process.env.PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM = platformStatus().current;
     try {
         const pi = fakePi();
         await createPiClaudeCodeProvider({
@@ -988,6 +990,8 @@ test("configured failover retries an unseen rate-limit rejection and sticks to t
     } finally {
         if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
         else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        if (originalAcknowledgement === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM = originalAcknowledgement;
         await Promise.all([
             rm(primaryRoot, { recursive: true, force: true }),
             rm(secondaryRoot, { recursive: true, force: true }),
