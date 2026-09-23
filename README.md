@@ -100,7 +100,7 @@ Alternatively, set `PI_CLAUDE_CODE_PROVIDER_CONFIG` to a private JSON file conta
 
 Provider IDs and labels are distinct lowercase opaque labels, not emails, account IDs, or display names. Configuration roots must be existing absolute physical directories in canonical form. Relative paths, missing directories, duplicate roots, and any root or ancestor symlink fail before the extension registers anything.
 
-Configured instances require `email` and `orgId` from `claude auth status`. These are undocumented Claude Code fields, so their presence is capability-checked and missing fields fail closed. The version 1 fingerprint is SHA-256 over this exact UTF-8 text, with the email trimmed and lowercased and the organization ID trimmed:
+Configured instances require `email` and `orgId` from `claude auth status`. These are undocumented Claude Code fields, so their presence is capability-checked and missing fields, or fields containing control characters, fail closed. The version 1 fingerprint is SHA-256 over this exact UTF-8 text, with the email trimmed and lowercased and the organization ID trimmed:
 
 ```text
 pi-claude-code-provider:claude-auth-identity:v1
