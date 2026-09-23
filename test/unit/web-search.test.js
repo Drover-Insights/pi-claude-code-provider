@@ -262,6 +262,21 @@ test("web search preserves a protocol failure when process cleanup also fails", 
     }
 });
 
+test("web search accepts system status records before initialization", async () => {
+    // Claude Code 2.1.281 emits system/commands_changed ahead of system/init.
+    const fake = await fakeSearch(`
+process.stdout.write(JSON.stringify({ type: "system", subtype: "commands_changed" }) + "\\n");
+process.stdout.write(JSON.stringify(${JSON.stringify(searchInit)}) + "\\n");
+process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "sourced result" }) + "\\n");`);
+    try {
+        const installation = { executable: fake.executable, version: "test", subscriptionType: "pro" };
+        assert.equal(await searchWithClaude(installation, { query: "query" }), "sourced result");
+    }
+    finally {
+        await rm(fake.directory, { recursive: true, force: true });
+    }
+});
+
 test("web search fails closed on missing, duplicate, and unexpected initialization", async () => {
     const cases = [
         { body: `process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"no init"})+"\\n");`, pattern: /before initialization/ },

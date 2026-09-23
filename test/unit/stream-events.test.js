@@ -143,6 +143,24 @@ test("rejects unexpected initialization tools", () => {
 function init(mapper) {
     mapper.accept(initRecord());
 }
+test("accepts system status records before initialization but no other records", async () => {
+    const stream = createAssistantMessageEventStream();
+    const output = createOutput(model);
+    const mapper = makeMapper(stream, output, new Set(), new Map(), () => { });
+    // Claude Code 2.1.281 emits system/commands_changed ahead of system/init.
+    mapper.accept({ type: "system", subtype: "commands_changed" });
+    assert.throws(() => mapper.accept({ type: "stream_event", event: { type: "message_start", message: { id: "msg_1", model: "claude-sonnet-5", usage: {} } } }), (error) => {
+        assert.equal(error.code, "protocol_order");
+        assert.match(error.message, /before initialization/);
+        return true;
+    });
+    init(mapper);
+    mapper.accept({ type: "result", is_error: false, result: "ok", stop_reason: "end_turn" });
+    mapper.completeResult();
+    const result = await stream.result();
+    assert.equal(result.stopReason, "stop");
+    assert.equal(result.content[0].text, "ok");
+});
 function exactToolTerminationResult(overrides = {}) {
     return {
         type: "result",
