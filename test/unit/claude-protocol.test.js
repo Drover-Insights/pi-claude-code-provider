@@ -60,7 +60,7 @@ test("rejects any plugin other than the exact builtin inventory", () => {
     const [agentsMd] = builtinPlugins;
     for (const plugins of [
         [{ name: "other", path: "builtin", source: "other@builtin" }],
-        [{ ...agentsMd, path: "/home/user/.claude/plugins/agents-md" }],
+        [{ ...agentsMd, path: "/opt/claude/plugins/agents-md" }],
         [{ ...agentsMd, source: "agents-md@marketplace" }],
         [{ ...agentsMd, extra: true }],
         [{ name: "agents-md", path: "builtin" }],
