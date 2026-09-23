@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { access, chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
 import { getLastSearchMetrics } from "../../src/metrics.ts";
@@ -62,6 +63,31 @@ process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "
     }
     finally {
         await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("web search reads the result of a Claude process that exits while its ownership is still being recorded", { timeout: 20_000 }, async () => {
+    const fake = await fakeSearch(`
+process.stdout.write(JSON.stringify(${JSON.stringify(searchInit)}) + "\\n");
+process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "early result" }) + "\\n");
+process.exit(0);`);
+    // Slow filesystem work (a loaded CI runner) lets Claude exit before web
+    // search has recorded ownership of it.
+    const fsPromises = createRequire(import.meta.url)("node:fs/promises");
+    const originalChmod = fsPromises.chmod;
+    fsPromises.chmod = async (...args) => {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        return originalChmod(...args);
+    };
+    syncBuiltinESMExports();
+    try {
+        const installation = { executable: fake.executable, version: "test", subscriptionType: "pro" };
+        assert.equal(await searchWithClaude(installation, { query: "query" }), "early result");
+    }
+    finally {
+        fsPromises.chmod = originalChmod;
+        syncBuiltinESMExports();
+        await rm(fake.directory, { recursive: true, force: true });
     }
 });
 

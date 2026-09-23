@@ -331,16 +331,15 @@ export function createClaudeStream(
             () => resolveStdout?.(),
           );
         };
-        child.stdout?.on("data", (chunk: Buffer) => {
+        running.stdout.on("data", (chunk: Buffer) => {
           try {
             parser.push(chunk);
           } catch (error) {
             failProtocol(error);
           }
         });
-        child.stdout?.on("end", finishStdout);
-        child.stdout?.once("close", finishStdout);
-        if (!child.stdout) finishStdout();
+        running.stdout.on("end", finishStdout);
+        running.stdout.once("close", finishStdout);
 
         if (prepared.readyPath) {
           await waitForReadyOrExit(prepared.readyPath, readyTimeoutMs, options?.signal, running.supervisor.wait(), {

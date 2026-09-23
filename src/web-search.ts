@@ -134,12 +134,9 @@ export async function searchWithClaude(
       privatePaths: [directory],
     });
     protocol = currentProtocol;
-    const { child } = running;
-    const stdoutDone = child.stdout
-      ? finished(child.stdout, { cleanup: true }).catch(() => {})
-      : Promise.resolve();
+    const stdoutDone = finished(running.stdout, { cleanup: true }).catch(() => {});
     const parser = new JsonlParser((value) => currentProtocol.accept(value), MAX_CAPTURE_BYTES);
-    child.stdout?.on("data", (chunk: Buffer) => {
+    running.stdout.on("data", (chunk: Buffer) => {
       running.supervisor.touch();
       metrics.capturedBytes += chunk.length;
       if (metrics.capturedBytes > MAX_CAPTURE_BYTES) {
@@ -155,7 +152,7 @@ export async function searchWithClaude(
         running.terminateInBackground();
       }
     });
-    child.stdout?.on("end", () => {
+    running.stdout.on("end", () => {
       if (!protocolError && !oversized) {
         try {
           parser.end();
