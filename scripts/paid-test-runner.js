@@ -86,6 +86,8 @@ try {
       // Lanes are explicit: an ambient override must not silently redirect the
       // npm lane, and the standalone lane must not fall back to the npm entry.
       ...(stage.requiresPiBin ? {} : { [PI_BIN_ENV]: "" }),
+      // Stages target the default provider; ambient configured instances would replace it.
+      PI_CLAUDE_CODE_PROVIDER_CONFIG: "",
       [PAID_LAUNCH_BUDGET_ENV.child]: "1",
       [PAID_LAUNCH_BUDGET_ENV.stageDirectory]: stageBudgetDirectory,
       [PAID_LAUNCH_BUDGET_ENV.stageCap]: String(stage.cap),

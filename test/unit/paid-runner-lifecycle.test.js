@@ -39,12 +39,22 @@ else {
   return executable;
 }
 
-test("the guarded runner isolates ambient SYSTEM.md without changing the user's config", async () => {
+test("the guarded runner isolates ambient SYSTEM.md and provider configuration without changing the user's config", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-paid-isolation-fixture-"));
   const agentDirectory = join(directory, "agent");
   await mkdir(agentDirectory);
   const systemFile = join(agentDirectory, "SYSTEM.md");
   await writeFile(systemFile, "AMBIENT_ISOLATION_MARKER");
+  // A maintainer's configured instances replace the default provider the paid lanes target.
+  const configurationPath = join(directory, "instances.json");
+  await writeFile(configurationPath, JSON.stringify({
+    instances: [{
+      providerId: "claude-ambient",
+      label: "ambient",
+      configRoot: directory,
+      expectedIdentityFingerprint: "sha256:a6ec27b5b85ab0d35d9cf3d7cf13d4448c1c09e5f2a022851266927e9f86a2d1",
+    }],
+  }), { mode: 0o600 });
   const executable = await fakeClaude(directory, "live test successful");
   const child = spawn(process.execPath, nodeFixtureArgs([join(root, "scripts", "paid-test-runner.js"), "smoke"]), {
     cwd: root,
@@ -55,6 +65,7 @@ test("the guarded runner isolates ambient SYSTEM.md without changing the user's 
       PI_CODING_AGENT_DIR: agentDirectory,
       PI_OFFLINE: "1",
       PI_CLAUDE_CODE_PROVIDER_PATH: executable,
+      PI_CLAUDE_CODE_PROVIDER_CONFIG: configurationPath,
       PI_CLAUDE_CODE_PROVIDER_CONFIRM_PAID_TESTS: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
