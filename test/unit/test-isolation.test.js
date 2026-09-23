@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-const preload = fileURLToPath(new URL("../support/register-pi-loader.js", import.meta.url));
+const preload = new URL("../support/register-pi-loader.js", import.meta.url).href;
 
 test("the test preload ignores a maintainer's ambient provider configuration", () => {
   const result = spawnSync(process.execPath, [
