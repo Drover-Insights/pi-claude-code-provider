@@ -553,6 +553,24 @@ test("provider rejects a model without a usable output maximum before claiming a
     assert.match(result.errorMessage ?? "", /maxTokens must be a positive integer/);
     assert.equal(claims, 0);
 });
+test("provider redacts the bound configuration root from MCP initialization errors", async () => {
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-mcp-root-"));
+    const fake = await fakeClaude(`
+process.stdin.resume();
+process.stdin.on("end", () => {
+  const record = { ...${JSON.stringify(init)}, mcp_server_errors: [{ type: "invalid_config", message: "bad settings at " + process.env.CLAUDE_CONFIG_DIR + "/settings.json" }] };
+  process.stdout.write(JSON.stringify(record) + "\\n", () => process.exit(1));
+});`);
+    try {
+        const result = await createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro", configRoot })(model, context, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "error");
+        assert.match(result.errorMessage ?? "", /MCP initialization errors: invalid_config: bad settings at <PRIVATE>\/settings\.json/);
+        assert.equal((result.errorMessage ?? "").includes(configRoot), false);
+    } finally {
+        await rm(configRoot, { recursive: true, force: true });
+        await rm(fake.dir, { recursive: true, force: true });
+    }
+});
 test("provider rejects a successful result followed by nonzero exit", async () => {
     const fake = await fakeClaude(`
 process.stdin.resume();

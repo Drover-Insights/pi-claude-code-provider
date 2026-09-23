@@ -47,6 +47,8 @@ export interface ClaudeEventMapperOptions {
   toolNames: Map<string, string>;
   onToolUse: () => void;
   onRateLimitNotice?: RateLimitNoticeSink;
+  /** Called before publishing a terminal error that Claude attributes to a rejected rate limit. */
+  onRateLimitRejection?: () => void;
   onResponseAnnouncement?: ResponseAnnouncementSink;
   privatePaths?: readonly string[];
 }
@@ -83,6 +85,7 @@ export class ClaudeEventMapper {
   private readonly toolNames: Map<string, string>;
   private readonly onToolUse: () => void;
   private readonly onRateLimitNotice: RateLimitNoticeSink;
+  private readonly onRateLimitRejection: () => void;
   private readonly onResponseAnnouncement: ResponseAnnouncementSink;
   private assistantDiagnostic: string | undefined;
   private readonly privatePaths: readonly string[];
@@ -94,6 +97,7 @@ export class ClaudeEventMapper {
     this.toolNames = options.toolNames;
     this.onToolUse = options.onToolUse;
     this.onRateLimitNotice = options.onRateLimitNotice ?? (() => {});
+    this.onRateLimitRejection = options.onRateLimitRejection ?? (() => {});
     this.onResponseAnnouncement = options.onResponseAnnouncement ?? (() => {});
     this.privatePaths = options.privatePaths ?? [];
   }
@@ -354,6 +358,7 @@ export class ClaudeEventMapper {
           `${TRANSCRIPT_BREAKPOINT_ENV}=off to drop this provider's transcript breakpoint (prompt caching is lost ` +
           `while it is off) and report your Claude Code version`;
       }
+      if (this.rejectedRateLimit !== undefined && record.api_error_status === 429) this.onRateLimitRejection();
       this.fail(`Claude Code request failed${status}: ${detail}`);
       return;
     }

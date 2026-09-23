@@ -41,7 +41,8 @@ const CONFIGURATION_FILE_ENVIRONMENT_VARIABLE = "PI_CLAUDE_CODE_PROVIDER_CONFIG"
 
 export default async function piClaudeCodeProvider(pi: ExtensionAPI): Promise<void> {
   const configurationPath = process.env[CONFIGURATION_FILE_ENVIRONMENT_VARIABLE];
-  if (configurationPath === undefined) return initializePiClaudeCodeProvider(pi);
+  // Like PI_CLAUDE_CODE_PROVIDER_PATH, an empty or whitespace value means unset.
+  if (configurationPath === undefined || !configurationPath.trim()) return initializePiClaudeCodeProvider(pi);
   const configuration = await readConfiguredProviderFile(configurationPath);
   return initializePiClaudeCodeProvider(pi, configuration.instances, configuration.failover);
 }
@@ -196,9 +197,10 @@ export async function initializePiClaudeCodeProvider(
     searchRegistrationAttempted = true;
     registerWebSearchTool(
       pi,
-      firstProvider.installation,
+      // Search as the account that owns the active model; other models keep the first account.
+      (modelProvider) => providers.find((provider) => provider.providerId === modelProvider) ?? firstProvider,
       searchOutputs.retain,
-      (notice) => activeRateLimitNotifiers?.get(firstProvider.providerId)?.(notice),
+      (providerId, notice) => activeRateLimitNotifiers?.get(providerId)?.(notice),
       (message) => ctx.ui.notify(message, "warning"),
     );
   });
@@ -463,9 +465,9 @@ function createSearchOutputOwner() {
 
 function registerWebSearchTool(
   pi: ExtensionAPI,
-  installation: ClaudeInstallation,
+  searchAccount: (modelProvider: string | undefined) => { providerId: string; installation: ClaudeInstallation },
   retainOutput: (result: string) => Promise<{ directory: string; path: string } | undefined>,
-  onRateLimitNotice: (notice: RateLimitNotice) => void,
+  onRateLimitNotice: (providerId: string, notice: RateLimitNotice) => void,
   notify: (message: string) => void,
 ): void {
   if (pi.getAllTools().some((tool) => tool.name === SEARCH_TOOL)) {
@@ -482,12 +484,13 @@ function registerWebSearchTool(
       query: Type.String({ minLength: 1, description: "Search query" }),
       focus: Type.Optional(Type.String({ description: "Optional guidance about what to prioritize" })),
     }),
-    async execute(_toolCallId, params, signal, onUpdate) {
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
       onUpdate?.({ content: [{ type: "text", text: `Searching the web for: ${params.query}` }], details: { status: "searching" } });
+      const account = searchAccount(ctx?.model?.provider);
       const result = await searchWithClaude(
-        installation,
+        account.installation,
         { query: params.query, focus: params.focus, signal },
-        { onRateLimitNotice },
+        { onRateLimitNotice: (notice) => onRateLimitNotice(account.providerId, notice) },
       );
       const truncated = truncateHead(result, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
       let text = truncated.content;

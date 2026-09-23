@@ -100,7 +100,7 @@ Alternatively, set `PI_CLAUDE_CODE_PROVIDER_CONFIG` to a private JSON file conta
 
 Provider IDs and labels are distinct lowercase opaque labels, not emails, account IDs, or display names. Configuration roots must be existing absolute physical directories in canonical form. Relative paths, missing directories, duplicate roots, and any root or ancestor symlink fail before the extension registers anything.
 
-Configured instances require `email` and `orgId` from `claude auth status`. These are undocumented Claude Code fields, so their presence is capability-checked and missing fields fail closed. The version 1 fingerprint is SHA-256 over this exact UTF-8 text, with the email trimmed and lowercased and the organization ID trimmed:
+Configured instances require `email` and `orgId` from `claude auth status`. These are undocumented Claude Code fields, so their presence is capability-checked and missing fields, or fields containing control characters, fail closed. The version 1 fingerprint is SHA-256 over this exact UTF-8 text, with the email trimmed and lowercased and the organization ID trimmed:
 
 ```text
 pi-claude-code-provider:claude-auth-identity:v1
@@ -108,7 +108,7 @@ pi-claude-code-provider:claude-auth-identity:v1
 <organization ID>
 ```
 
-Only the expected hash belongs in configuration. Run `/pi-claude-code-provider-doctor` after changing an account login; its `report` mode is unavailable for configured instances. Rate-limit notices identify the affected label, and the shared web-search tool uses the first configured instance.
+Only the expected hash belongs in configuration. Run `/pi-claude-code-provider-doctor` after changing an account login; its `report` mode is unavailable for configured instances. Rate-limit notices identify the affected label, and the shared web-search tool runs as the instance that owns the active model, or the first configured instance for any other model, including the failover provider.
 
 The optional `failover` descriptor registers one additional provider backed by the ordered instances. A structured rate-limit rejection switches later requests to the next available account. The rejected request itself is retried only when it produced no assistant-visible output. Exhaustion remains sticky until Claude's reported reset time; without one, it remains sticky for the Pi process. Other failures never switch accounts, and all pool models advertise the most conservative limits shared by every member. The instance-specific providers remain available for direct selection.
 

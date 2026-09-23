@@ -79,7 +79,9 @@ function verifyAccountIdentity(status: ClaudeAuthStatus, expectedIdentityFingerp
   }
   const email = status.email.trim().toLowerCase();
   const orgId = status.orgId.trim();
-  if (!email || !orgId) {
+  // The v1 text separates fields with a newline; a control character inside a
+  // field could make two identities hash identically, so it fails closed.
+  if (!email || !orgId || /[\u0000-\u001f\u007f]/.test(email + orgId)) {
     throw new ClaudeCodeError(
       "identity_unavailable",
       "Claude Code did not provide the account identity required for verification",
