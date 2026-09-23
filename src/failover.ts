@@ -32,6 +32,9 @@ export function createClaudeFailoverStream(
 
   return (model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream => {
     const outer = createAssistantMessageEventStream();
+    // Read once when Pi starts the request, so a session switch between attempts
+    // cannot move a retry to another directory.
+    const requestCwd = dependencies.workingDirectory?.();
     void (async () => {
       let payloadCalled = false;
       let payloadReplacement: unknown;
@@ -68,6 +71,7 @@ export function createClaudeFailoverStream(
         let rateLimitTerminal = false;
         const inner = createClaudeStream(member.installation, {
           ...dependencies,
+          workingDirectory: () => requestCwd,
           onRateLimitRejection: () => { rateLimitTerminal = true; },
           onRateLimitNotice: (notice) => {
             if (notice.status === "rejected") {
