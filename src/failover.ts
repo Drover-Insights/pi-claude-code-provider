@@ -67,9 +67,15 @@ export function createClaudeFailoverStream(
           onRateLimitNotice: (notice) => {
             if (notice.status === "rejected") {
               rejection = notice;
-              const currentDeadline = exhaustedUntil.get(member.providerId) ?? 0;
-              const reportedDeadline = notice.resetsAt ?? Number.POSITIVE_INFINITY;
-              exhaustedUntil.set(member.providerId, Math.max(currentDeadline, reportedDeadline));
+              // A reported reset instant supersedes the unknown (infinite) deadline of a
+              // notice without one; otherwise keep the later of the known instants.
+              const currentDeadline = exhaustedUntil.get(member.providerId);
+              const deadline = notice.resetsAt === undefined
+                ? currentDeadline ?? Number.POSITIVE_INFINITY
+                : currentDeadline === undefined || currentDeadline === Number.POSITIVE_INFINITY
+                  ? notice.resetsAt
+                  : Math.max(currentDeadline, notice.resetsAt);
+              exhaustedUntil.set(member.providerId, deadline);
             }
             dependencies.onRateLimitNotice?.(member.providerId, notice);
           },

@@ -8,6 +8,8 @@ import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, DefaultPackageManager, SettingsMa
 import initializePiClaudeCodeProvider, { createPiClaudeCodeProvider } from "../../extensions/index.ts";
 import implementation, { initializePiClaudeCodeProvider as initializeConfiguredProvider } from "../../extensions/pi-claude-code-provider.ts";
 import { VERIFIED_VERSIONS, platformStatus } from "../../src/compatibility.ts";
+import { providerModelsForSubscription } from "../../src/catalog.ts";
+import { createClaudeFailoverStream } from "../../src/failover.ts";
 import { CAPTURED_CLAUDE_HELP_PATH, ELIGIBLE_CLAUDE_AUTH } from "../support/claude-fixture.js";
 import { nodeFixtureSource } from "../support/node-fixture.js";
 
@@ -871,7 +873,7 @@ test("configured failover retries an unseen rate-limit rejection and sticks to t
         mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
     ]);
     const requestLogPath = join(primaryRoot, "requests.log");
-    const rejected = { status: "rejected", rateLimitType: "five_hour", resetsAt: Date.now() - 1_000 };
+    const rejected = { status: "rejected", rateLimitType: "five_hour", resetsAt: Date.now() + 60_000 };
     const { directory, executable } = await createFakeClaude("unbound", {
         configRootResults: {
             [primaryRoot]: "primary-account",
@@ -979,6 +981,56 @@ test("configured failover retries when Claude reports the rejection as a 429 err
     } finally {
         if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
         else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
+test("configured failover retries an account after its reported reset even when an earlier notice had none", async () => {
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    const requestLogPath = join(primaryRoot, "requests.log");
+    // Claude reports resetsAt in Unix seconds; the failover clock is milliseconds.
+    const resetSeconds = 2_000_000_000;
+    const { directory, executable } = await createFakeClaude("unbound", {
+        configRootResults: { [secondaryRoot]: "secondary-account" },
+        configRootRateLimitInfo: {
+            [primaryRoot]: [
+                { status: "rejected", rateLimitType: "five_hour" },
+                { status: "rejected", rateLimitType: "five_hour", resetsAt: resetSeconds },
+            ],
+        },
+        rejectedConfigRoots: [primaryRoot],
+        requestLogPath,
+    });
+    try {
+        let clock = resetSeconds * 1000 - 60_000;
+        const installation = (configRoot) => ({ executable, version: VERIFIED_VERSIONS.claudeCode, subscriptionType: "pro", configRoot });
+        const streamSimple = createClaudeFailoverStream([
+            { providerId: "claude-primary", label: "primary", installation: installation(primaryRoot) },
+            { providerId: "claude-secondary", label: "secondary", installation: installation(secondaryRoot) },
+        ], { now: () => clock, workingDirectory: () => tmpdir() });
+        const configured = providerModelsForSubscription("pro").find((model) => model.id === "sonnet");
+        const model = { ...configured, provider: "claude-auto", api: "pi-claude-code-provider-headless", baseUrl: "pi-claude-code-provider://local" };
+        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+
+        const first = await streamSimple(model, context, { reasoning: "medium" }).result();
+        assert.equal(first.stopReason, "stop", first.errorMessage);
+        clock = resetSeconds * 1000 + 1;
+        const second = await streamSimple(model, context, { reasoning: "medium" }).result();
+        assert.equal(second.stopReason, "stop", second.errorMessage);
+        assert.deepEqual((await readFile(requestLogPath, "utf8")).trim().split("\n"), [
+            primaryRoot,
+            secondaryRoot,
+            primaryRoot,
+            secondaryRoot,
+        ]);
+    } finally {
         await Promise.all([
             rm(primaryRoot, { recursive: true, force: true }),
             rm(secondaryRoot, { recursive: true, force: true }),
