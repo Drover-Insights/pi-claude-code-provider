@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,6 +61,20 @@ test("verifies a versioned non-secret account identity fingerprint without retur
     for (const invalidIdentity of [{ email: 7, orgId: "org_123" }, { email: "user@example.com", orgId: {} }]) {
         assert.throws(
             () => parseAuthStatus(JSON.stringify({ ...ELIGIBLE_CLAUDE_AUTH, ...invalidIdentity }), expected),
+            (error) => error.code === "identity_unavailable",
+        );
+    }
+});
+test("rejects account identity fields containing control characters, even when the fingerprint matches", () => {
+    // The documented v1 text joins fields with a newline, so these two identities hash identically.
+    const expected = `sha256:${createHash("sha256").update("pi-claude-code-provider:claude-auth-identity:v1\nuser@example.com\norg_1\norg_2", "utf8").digest("hex")}`;
+    for (const identity of [
+        { email: "user@example.com\norg_1", orgId: "org_2" },
+        { email: "user@example.com", orgId: "org_1\norg_2" },
+        { email: "user@example.com", orgId: "org_1\torg_2" },
+    ]) {
+        assert.throws(
+            () => parseAuthStatus(JSON.stringify({ ...ELIGIBLE_CLAUDE_AUTH, ...identity }), expected),
             (error) => error.code === "identity_unavailable",
         );
     }
