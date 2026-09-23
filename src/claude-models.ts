@@ -20,13 +20,19 @@ export const MODEL_ALIASES = ["sonnet", "fable", "opus", "haiku"] as const;
 export type ModelAlias = (typeof MODEL_ALIASES)[number];
 export type ModelAliasVersions = Partial<Record<ModelAlias, string>>;
 
+// The CLI's own catalog is the `aliases:{...}` object. The executable also
+// bundles other products' tables (for example `provider_alias_targets:{...}`)
+// that name different models, so entries outside the catalog are ignored.
+// Entries may be any key; each holds at most one nested object (per_provider).
+// Bounded runs keep a stray match in binary data cheap and cap the match size.
+const CATALOG_PATTERN = /\baliases:\{((?:[A-Za-z0-9_]{1,32}:\{[^{}]{0,512}(?:\{[^{}]{0,512}\}[^{}]{0,512})?\},?){1,16})\}/g;
 // Only `default:` can apply here. src/auth.ts rejects anything that is not
 // firstParty, so reading a per-provider override would report a model this
 // extension can never serve.
 const ALIAS_PATTERN = /\b(sonnet|opus|haiku|fable):\{default:"([A-Za-z0-9._-]{1,64})"/g;
 const CHUNK_BYTES = 1024 * 1024;
-// A match cannot span more than this, so carrying it between chunks is enough.
-const OVERLAP_BYTES = 128;
+// A catalog match is bounded well below this, so carrying it between chunks is enough.
+const OVERLAP_BYTES = 32 * 1024;
 const SCAN_TIMEOUT_MS = 10_000;
 
 let cache: { key: string; versions: ModelAliasVersions } | undefined;
@@ -68,13 +74,15 @@ async function scan(path: string, timeoutMs: number): Promise<ModelAliasVersions
       // latin1 maps every byte to one character, so offsets stay meaningful in
       // a binary and no byte sequence can decode into a spurious match.
       const text = tail + buffer.subarray(0, bytesRead).toString("latin1");
-      for (const match of text.matchAll(ALIAS_PATTERN)) {
-        const alias = match[1];
-        const model = match[2];
-        if (alias === undefined || model === undefined) continue;
-        const values = found.get(alias) ?? new Set<string>();
-        values.add(model);
-        found.set(alias, values);
+      for (const catalog of text.matchAll(CATALOG_PATTERN)) {
+        for (const match of (catalog[1] ?? "").matchAll(ALIAS_PATTERN)) {
+          const alias = match[1];
+          const model = match[2];
+          if (alias === undefined || model === undefined) continue;
+          const values = found.get(alias) ?? new Set<string>();
+          values.add(model);
+          found.set(alias, values);
+        }
       }
       tail = text.slice(-OVERLAP_BYTES);
     }
