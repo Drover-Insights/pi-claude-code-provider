@@ -91,6 +91,24 @@ export function isCacheBreakpointLimit(detail: string): boolean {
   return CACHE_BREAKPOINT_LIMIT.test(detail);
 }
 
+// Claude Code 2.1.280 and later always report these builtin plugins, even with
+// every customization source disabled. Any other plugin, or any variation in
+// their shape, is still an unexpected customization.
+const BUILTIN_PLUGIN_NAMES = new Set(["agents-md", "telemetry"]);
+
+function onlyBuiltinPlugins(plugins: unknown[]): boolean {
+  const seen = new Set<string>();
+  for (const plugin of plugins) {
+    if (!plugin || typeof plugin !== "object" || Array.isArray(plugin)) return false;
+    const entry = plugin as Record<string, unknown>;
+    const name = entry.name;
+    if (typeof name !== "string" || !BUILTIN_PLUGIN_NAMES.has(name) || seen.has(name)) return false;
+    if (Object.keys(entry).length !== 3 || entry.path !== "builtin" || entry.source !== `${name}@builtin`) return false;
+    seen.add(name);
+  }
+  return true;
+}
+
 export function validateClaudeInitialization(value: unknown, expectation: ClaudeInitializationExpectation): string {
   const record = requireRecord(value, "Claude initialization");
   if (record.type !== "system" || record.subtype !== "init") {
@@ -113,7 +131,7 @@ export function validateClaudeInitialization(value: unknown, expectation: Claude
   if (!Array.isArray(record.slash_commands) || !Array.isArray(record.skills) || !Array.isArray(record.plugins)) {
     throw new ClaudeCodeError("protocol_init", "Claude initialization omitted customization inventories");
   }
-  if (record.slash_commands.length > 0 || record.skills.length > 0 || record.plugins.length > 0) {
+  if (record.slash_commands.length > 0 || record.skills.length > 0 || !onlyBuiltinPlugins(record.plugins)) {
     throw new ClaudeCodeError("isolation_customizations", "Claude Code loaded unexpected customizations");
   }
   if (record.apiKeySource !== "none") {
