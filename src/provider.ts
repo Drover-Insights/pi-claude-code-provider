@@ -244,7 +244,11 @@ export function createClaudeStream(
           onRateLimitNotice,
           onRateLimitRejection: dependencies.onRateLimitRejection,
           onResponseAnnouncement: announceResponse,
-          privatePaths: [prepared.directory, ...(prepared.imageStoreDirectory ? [prepared.imageStoreDirectory] : [])],
+          privatePaths: [
+            prepared.directory,
+            ...(prepared.imageStoreDirectory ? [prepared.imageStoreDirectory] : []),
+            ...(installation.configRoot ? [installation.configRoot] : []),
+          ],
         });
 
         // Phase 2 — claim the launch, spawn Claude, and record exact ownership.
