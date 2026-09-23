@@ -242,6 +242,7 @@ export function createClaudeStream(
           toolNames: prepared.toolNames,
           onToolUse: stopForToolUse,
           onRateLimitNotice,
+          onRateLimitRejection: dependencies.onRateLimitRejection,
           onResponseAnnouncement: announceResponse,
           privatePaths: [prepared.directory, ...(prepared.imageStoreDirectory ? [prepared.imageStoreDirectory] : [])],
         });
