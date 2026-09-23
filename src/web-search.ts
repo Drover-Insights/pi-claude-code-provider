@@ -268,6 +268,8 @@ class SearchProtocol {
       return;
     }
     if (!this.initialized) {
+      // Claude may emit status records (for example commands_changed) before init.
+      if (record.type === "system") return;
       throw new ClaudeCodeError("protocol_order", "Claude web search emitted a record before initialization");
     }
     if (this.resultRecord) {

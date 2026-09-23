@@ -223,6 +223,7 @@ test("web search preserves a protocol failure when process cleanup also fails", 
 test("web search fails closed on missing, duplicate, and unexpected initialization", async () => {
     const cases = [
         { body: `process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"no init"})+"\\n");`, pattern: /before initialization/ },
+        { body: `process.stdout.write(JSON.stringify({type:"system",subtype:"commands_changed",commands:[]})+"\\n"+JSON.stringify({type:"stream_event",event:{type:"message_start"}})+"\\n");`, pattern: /before initialization/ },
         { body: `const init=${JSON.stringify(searchInit)}; process.stdout.write(JSON.stringify(init)+"\\n"+JSON.stringify(init)+"\\n");`, pattern: /duplicate initialization/ },
         { body: `process.stdout.write(JSON.stringify(${JSON.stringify({ ...searchInit, tools: ["Bash"] })})+"\\n");`, pattern: /unexpected tool set/ },
         { body: `process.stdout.write(JSON.stringify(${JSON.stringify({ ...searchInit, mcp_servers: [{ name: "rogue", status: "connected" }] })})+"\\n");`, pattern: /unexpected MCP server/ },
@@ -241,6 +242,19 @@ test("web search fails closed on missing, duplicate, and unexpected initializati
     }
 });
 
+test("web search tolerates a system record such as commands_changed before initialization", async () => {
+    const fake = await fakeSearch(`
+process.stdout.write(JSON.stringify({type:"system",subtype:"commands_changed",commands:[]}) + "\\n");
+process.stdout.write(JSON.stringify(${JSON.stringify(searchInit)}) + "\\n");
+process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"sourced result"}) + "\\n");`);
+    try {
+        const installation = { executable: fake.executable, version: "test", subscriptionType: "pro" };
+        assert.equal(await searchWithClaude(installation, { query: "query" }), "sourced result");
+    }
+    finally {
+        await rm(fake.directory, { recursive: true, force: true });
+    }
+});
 test("web search rejects oversized requests before launch", async () => {
     const installation = { executable: "/does/not/matter", version: "test", subscriptionType: "pro" };
     await assert.rejects(searchWithClaude(installation, { query: "x".repeat(64 * 1024 + 1) }), /65536-byte limit/);

@@ -143,7 +143,12 @@ export class ClaudeEventMapper {
       this.validateInit(record);
       return;
     }
-    if (!this.initialized) throw new ClaudeCodeError("protocol_order", "Claude emitted a record before initialization");
+    if (!this.initialized) {
+      // Claude may emit status records (for example commands_changed) before init;
+      // they carry no response content, so ignore them like later status records.
+      if (record.type === "system") return;
+      throw new ClaudeCodeError("protocol_order", "Claude emitted a record before initialization");
+    }
     if (!this.responseStarted) {
       throw new ClaudeCodeError("protocol_order", "Claude emitted a response record before Pi response observers completed");
     }
