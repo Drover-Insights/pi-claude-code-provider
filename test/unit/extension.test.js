@@ -1098,6 +1098,45 @@ test("configured failover retries an account after its reported reset even when 
     }
 });
 
+test("configured failover keeps a retry in the directory where the request started", async () => {
+    const [primaryRoot, secondaryRoot, startDirectory, laterDirectory] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-start-cwd-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-later-cwd-")).then(realpath),
+    ]);
+    const { directory, executable } = await createFakeClaude("unbound", {
+        configRootRateLimitInfo: { [primaryRoot]: [{ status: "rejected", rateLimitType: "five_hour" }] },
+        rejectedConfigRoots: [primaryRoot],
+        reportCwd: true,
+    });
+    try {
+        // The first read is the request start; any later read models a session switch.
+        let reads = 0;
+        const workingDirectory = () => (reads++ === 0 ? startDirectory : laterDirectory);
+        const installation = (configRoot) => ({ executable, version: VERIFIED_VERSIONS.claudeCode, subscriptionType: "pro", configRoot });
+        const streamSimple = createClaudeFailoverStream([
+            { providerId: "claude-primary", label: "primary", installation: installation(primaryRoot) },
+            { providerId: "claude-secondary", label: "secondary", installation: installation(secondaryRoot) },
+        ], { workingDirectory });
+        const configured = providerModelsForSubscription("pro").find((model) => model.id === "sonnet");
+        const model = { ...configured, provider: "claude-auto", api: "pi-claude-code-provider-headless", baseUrl: "pi-claude-code-provider://local" };
+        const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+
+        const result = await streamSimple(model, context, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "stop", result.errorMessage);
+        assert.deepEqual(result.content, [{ type: "text", text: startDirectory }]);
+    } finally {
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(startDirectory, { recursive: true, force: true }),
+            rm(laterDirectory, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
 test("configured failover names accounts rejected with an already-past reset", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
         mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
