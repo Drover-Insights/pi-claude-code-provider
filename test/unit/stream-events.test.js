@@ -173,6 +173,30 @@ test("rejects duplicate initialization, unknown records, and invalid event order
     init(ordering);
     assert.throws(() => ordering.accept({ type: "stream_event", event: { type: "content_block_stop", index: 0 } }), /before message_start/);
 });
+test("tolerates a system record such as commands_changed before initialization", async () => {
+    // Claude Code 2.1.281 with nonessential traffic disabled emits commands_changed before init.
+    const stream = createAssistantMessageEventStream();
+    const output = createOutput(model);
+    const mapper = makeMapper(stream, output, new Set(), new Map(), () => { });
+    mapper.accept({ type: "system", subtype: "commands_changed", commands: [] });
+    init(mapper);
+    mapper.accept({ type: "stream_event", event: { type: "message_start", message: { id: "msg_pre_init", model: "claude-sonnet-5", usage: {} } } });
+    mapper.accept({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } } });
+    mapper.accept({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hello" } } });
+    mapper.accept({ type: "stream_event", event: { type: "content_block_stop", index: 0 } });
+    mapper.accept({ type: "result", is_error: false, result: "hello" });
+    mapper.completeResult();
+    const result = await stream.result();
+    assert.equal(result.stopReason, "stop");
+    assert.equal(result.content[0].text, "hello");
+});
+test("still rejects non-system records before initialization", () => {
+    const streamEvent = makeMapper(createAssistantMessageEventStream(), createOutput(model), new Set(), new Map(), () => { });
+    streamEvent.accept({ type: "system", subtype: "commands_changed", commands: [] });
+    assert.throws(() => streamEvent.accept({ type: "stream_event", event: { type: "message_start", message: { id: "msg_early", model: "claude-sonnet-5", usage: {} } } }), /before initialization/);
+    const result = makeMapper(createAssistantMessageEventStream(), createOutput(model), new Set(), new Map(), () => { });
+    assert.throws(() => result.accept({ type: "result", is_error: false, result: "no init" }), /before initialization/);
+});
 test("maps result-only fallback text, served limits, and cache details", async () => {
     const stream = createAssistantMessageEventStream();
     const output = createOutput(model);
