@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { access, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
 import { isContextOverflow } from "@earendil-works/pi-ai";
@@ -22,6 +23,7 @@ const model = {
     maxTokens: 64_000,
 };
 const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+const syncRequire = createRequire(import.meta.url);
 async function fakeClaude(body, { writeReady = true } = {}) {
     const dir = await mkdtemp(join(tmpdir(), "fake-claude-"));
     const executable = join(dir, process.platform === "win32" ? "claude.cjs" : "claude");
@@ -388,6 +390,35 @@ process.stdin.on("end", () => {
         assert.equal(events.filter((type) => type === "done" || type === "error").length, 1);
     }
     finally {
+        await rm(fake.dir, { recursive: true, force: true });
+    }
+});
+test("provider reads the reply of a Claude process that exits while its ownership is still being recorded", { timeout: 20_000 }, async () => {
+    const fake = await fakeClaude(`
+process.stdout.write(JSON.stringify(${JSON.stringify(init)}) + "\\n");
+process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"early reply",usage:{input_tokens:1,output_tokens:1}}) + "\\n");
+process.exit(0);`);
+    // Slow filesystem work (a loaded CI runner) lets Claude exit before the
+    // provider has recorded ownership of it.
+    const fsPromises = syncRequire("node:fs/promises");
+    const originalChmod = fsPromises.chmod;
+    fsPromises.chmod = async (...args) => {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        return originalChmod(...args);
+    };
+    syncBuiltinESMExports();
+    try {
+        const result = await createClaudeStream({
+            executable: fake.executable,
+            version: CAPTURED_CLAUDE_VERSION,
+            subscriptionType: "pro",
+        })(model, context, { reasoning: "medium" }).result();
+        assert.equal(result.stopReason, "stop", result.errorMessage);
+        assert.deepEqual(result.content, [{ type: "text", text: "early reply" }]);
+    }
+    finally {
+        fsPromises.chmod = originalChmod;
+        syncBuiltinESMExports();
         await rm(fake.dir, { recursive: true, force: true });
     }
 });

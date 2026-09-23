@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { PassThrough, type Readable } from "node:stream";
 import { buildClaudeEnvironment, claudeLaunch } from "./auth.ts";
 import { stderrExcerpt } from "./claude-protocol.ts";
 import { appendCleanupFailure, ClaudeCodeError, errorText } from "./errors.ts";
@@ -41,6 +42,12 @@ export interface ClaudeProcessOptions {
 /** A spawned Claude process and the lifecycle operations its caller needs. */
 export interface ClaudeProcess {
   readonly child: ChildProcess;
+  /**
+   * Claude's stdout, captured at spawn. Read this instead of `child.stdout`:
+   * Node resumes an unconsumed child stdout when the child exits and discards
+   * its data, and callers attach their consumers only after recording ownership.
+   */
+  readonly stdout: Readable;
   readonly supervisor: ProcessSupervisor;
   /** Record the child PID in the private directory marker for stale-state recovery. */
   recordOwnership(): Promise<void>;
@@ -69,8 +76,8 @@ export async function claimClaudeLaunch(signal: AbortSignal | undefined, claimLa
 /**
  * Start Claude in `cwd`, or else its private runtime directory, and take
  * ownership of it: a POSIX process-group leader or hidden Windows child,
- * supervised, with a bounded stderr tail and a cancellation listener registered
- * before the caller awaits.
+ * supervised, with a bounded stderr tail, captured stdout, and a cancellation
+ * listener registered before the caller awaits.
  */
 export function spawnClaudeProcess(options: ClaudeProcessOptions): ClaudeProcess {
   const launch = claudeLaunch(options.installation.executable, options.args);
@@ -118,8 +125,22 @@ export function spawnClaudeProcess(options: ClaudeProcessOptions): ClaudeProcess
     stderr = `${stderr}${chunk.toString("utf8")}`.slice(-MAX_STDERR_CHARS);
   });
 
+  // pipe, not pipeline: a failed child stream must still end the capture rather
+  // than destroy it before the caller's consumers exist. Stream failures reach
+  // the caller through the supervisor.
+  const stdout = new PassThrough();
+  if (child.stdout) {
+    child.stdout.pipe(stdout);
+    child.stdout.once("close", () => {
+      if (!stdout.writableEnded) stdout.end();
+    });
+  } else {
+    stdout.end();
+  }
+
   return {
     child,
+    stdout,
     supervisor,
     recordOwnership: () => recordRuntimeChild(options.directory, child.pid ?? 0),
     stderrExcerpt: () => stderrExcerpt(stderr, [
