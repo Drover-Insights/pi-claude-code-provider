@@ -108,7 +108,7 @@ pi-claude-code-provider:claude-auth-identity:v1
 <organization ID>
 ```
 
-Only the expected hash belongs in configuration. Run `/pi-claude-code-provider-doctor` after changing an account login; its `report` mode is unavailable for configured instances. Rate-limit notices identify the affected label, and the shared web-search tool uses the first configured instance.
+Only the expected hash belongs in configuration. Run `/pi-claude-code-provider-doctor` after changing an account login; its `report` mode is unavailable for configured instances. Rate-limit notices identify the affected label, and the shared web-search tool runs as the instance that owns the active model, or the first configured instance for any other model, including the failover provider.
 
 The optional `failover` descriptor registers one additional provider backed by the ordered instances. A structured rate-limit rejection switches later requests to the next available account. The rejected request itself is retried only when it produced no assistant-visible output. Exhaustion remains sticky until Claude's reported reset time; without one, it remains sticky for the Pi process. Other failures never switch accounts, and all pool models advertise the most conservative limits shared by every member. The instance-specific providers remain available for direct selection.
 
