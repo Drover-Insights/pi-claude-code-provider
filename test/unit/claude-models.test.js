@@ -80,6 +80,33 @@ test("finds a table that straddles a read-chunk boundary", async () => {
     }
 });
 
+test("finds a several-kilobyte catalog whose read-chunk boundary falls deep inside it", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-models-wide-"));
+    try {
+        // Eight filler entries (the pattern allows 16 entries of up to 512 bytes)
+        // push the real aliases about 4 KB past `aliases:{`. The 1 MiB boundary
+        // lands 2 KB in, so only a carried tail far longer than the old 128 bytes
+        // keeps the catalog whole.
+        const filler = Array.from({ length: 8 }, (_, index) => `pad${index}:{note:"${"x".repeat(500)}"},`).join("");
+        const catalog = ALIAS_TABLE.replace("aliases:{", `aliases:{${filler}`);
+        const boundaryOffset = 2048;
+        assert.ok(catalog.length > 4000);
+        assert.ok(catalog.indexOf("sonnet:{") > boundaryOffset);
+        const versions = await scan(directory, Buffer.concat([
+            Buffer.alloc(1024 * 1024 - boundaryOffset, 0x20),
+            Buffer.from(catalog, "latin1"),
+        ]));
+        assert.deepEqual(versions, {
+            sonnet: "claude-sonnet-5",
+            fable: "claude-fable-5-1",
+            opus: "claude-opus-5",
+            haiku: "claude-haiku-4-5",
+        });
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
 test("reads only the CLI's own catalog, not other products' alias tables", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-models-foreign-"));
     try {
