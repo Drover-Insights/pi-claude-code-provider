@@ -1274,6 +1274,46 @@ test("account-specific request failures redact the bound configuration root", as
     }
 });
 
+test("web search runs under the configured instance that owns the active model", async () => {
+    const [primaryRoot, secondaryRoot] = await Promise.all([
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+    ]);
+    const requestLogPath = join(primaryRoot, "requests.log");
+    const { directory, executable } = await createFakeClaude("unbound", {
+        configRootResults: {
+            [primaryRoot]: "primary-account",
+            [secondaryRoot]: "secondary-account",
+        },
+        configRootAuth: configuredAuthByRoot(primaryRoot, secondaryRoot),
+        requestLogPath,
+    });
+    const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    try {
+        const pi = fakePi();
+        await createPiClaudeCodeProvider({ instances: configuredInstances(primaryRoot, secondaryRoot) })(pi.api);
+        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify() {} } });
+        const provider = pi.providers.get("claude-secondary");
+        const configured = provider.models.find((model) => model.id === "sonnet");
+        const model = { ...configured, provider: "claude-secondary", api: provider.api, baseUrl: provider.baseUrl };
+
+        const search = pi.tools.get("pi_claude_code_provider_web_search");
+        const result = await search.execute("call", { query: "query" }, undefined, undefined, { model });
+        assert.deepEqual(result.content, [{ type: "text", text: "secondary-account" }]);
+        assert.deepEqual((await readFile(requestLogPath, "utf8")).trim().split("\n"), [secondaryRoot]);
+        await pi.handlers.get("session_shutdown")[0]({}, {});
+    } finally {
+        if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        await Promise.all([
+            rm(primaryRoot, { recursive: true, force: true }),
+            rm(secondaryRoot, { recursive: true, force: true }),
+            rm(directory, { recursive: true, force: true }),
+        ]);
+    }
+});
+
 test("the account-specific doctor checks every bound root and reports labels without paths", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
         mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
