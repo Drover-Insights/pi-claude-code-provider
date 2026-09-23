@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
+import * as PiAI from "@earendil-works/pi-ai";
 import { isContextOverflow } from "@earendil-works/pi-ai";
 import { createClaudeStream as createProviderStream, isExpectedToolHandoffExit, waitForReadyOrExit } from "../../src/provider.ts";
 import { getLastRequestMetrics } from "../../src/metrics.ts";
@@ -24,6 +25,10 @@ const model = {
 };
 const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
 const syncRequire = createRequire(import.meta.url);
+const skipWithoutPiTranscript = ["resolveTranscript", "getSystemMessageText", "getDeclaredTools"]
+    .every((name) => typeof PiAI[name] === "function")
+    ? false
+    : "installed pi-ai does not export the Pi 0.86 transcript helpers (resolveTranscript, getSystemMessageText, getDeclaredTools)";
 async function fakeClaude(body, { writeReady = true } = {}) {
     const dir = await mkdtemp(join(tmpdir(), "fake-claude-"));
     const executable = join(dir, process.platform === "win32" ? "claude.cjs" : "claude");
@@ -161,7 +166,7 @@ setTimeout(() => {
         await rm(fake.dir, { recursive: true, force: true });
     }
 });
-test("provider preserves Pi 0.86 transcript system instructions", async () => {
+test("provider preserves Pi 0.86 transcript system instructions", { skip: skipWithoutPiTranscript }, async () => {
     const fake = await fakeClaude(`
 const path = require("node:path");
 const privateDirectory = path.dirname(process.argv[process.argv.indexOf("--system-prompt-file") + 1]);
@@ -198,7 +203,7 @@ process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"fake o
         await rm(fake.dir, { recursive: true, force: true });
     }
 });
-test("provider applies logical payload replacements to a Pi 0.86 transcript", async () => {
+test("provider applies logical payload replacements to a Pi 0.86 transcript", { skip: skipWithoutPiTranscript }, async () => {
     const fake = await fakeClaude(`
 const path = require("node:path");
 const privateDirectory = path.dirname(process.argv[process.argv.indexOf("--system-prompt-file") + 1]);
@@ -260,7 +265,7 @@ setTimeout(() => {}, 50);`);
         await rm(fake.dir, { recursive: true, force: true });
     }
 });
-test("provider replays Pi 0.86 system and tool updates for a transport without mid-conversation support", async () => {
+test("provider replays Pi 0.86 system and tool updates for a transport without mid-conversation support", { skip: skipWithoutPiTranscript }, async () => {
     const expectedInit = {
         ...init,
         tools: ["mcp__pi__second"],
