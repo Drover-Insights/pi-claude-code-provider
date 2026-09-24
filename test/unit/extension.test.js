@@ -135,9 +135,9 @@ else {
 
 test("the default package extension loads an ordered account pool from its private configuration file", async () => {
     const [primaryRoot, secondaryRoot, configurationDirectory] = await Promise.all([
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-")).then(realpath),
     ]);
     const configurationPath = join(configurationDirectory, "instances.json");
     const { directory, executable } = await createFakeClaude("ok", {
@@ -221,7 +221,7 @@ test("the default package extension treats an empty private configuration settin
 });
 
 test("the default package extension rejects a non-private configuration file without disclosing its path", { skip: process.platform === "win32" }, async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-"));
+    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-")).then(realpath);
     const configurationPath = join(directory, "instances.json");
     const original = process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
     process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = configurationPath;
@@ -269,7 +269,7 @@ test("the default package extension rejects a symlinked configuration file witho
 });
 
 test("the default package extension rejects unknown private configuration fields", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-"));
+    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-")).then(realpath);
     const configurationPath = join(directory, "instances.json");
     const original = process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
     process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = configurationPath;
@@ -288,7 +288,7 @@ test("the default package extension rejects unknown private configuration fields
 });
 
 test("the default package extension allowlists instance and failover descriptor fields", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-"));
+    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-")).then(realpath);
     const configurationPath = join(directory, "instances.json");
     const original = process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
     process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = configurationPath;
@@ -313,7 +313,7 @@ test("the default package extension allowlists instance and failover descriptor 
 });
 
 test("the default package extension rejects an oversized private configuration file", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-"));
+    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-")).then(realpath);
     const configurationPath = join(directory, "instances.json");
     const original = process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
     process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = configurationPath;
@@ -332,7 +332,7 @@ test("the default package extension rejects an oversized private configuration f
 });
 
 test("the default package extension rejects a private configuration file that is not UTF-8", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-"));
+    const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-config-")).then(realpath);
     const configurationPath = join(directory, "instances.json");
     const original = process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG;
     process.env.PI_CLAUDE_CODE_PROVIDER_CONFIG = configurationPath;
@@ -351,7 +351,7 @@ test("the default package extension rejects a private configuration file that is
 });
 
 test("account-specific providers reject duplicate canonical Claude configuration roots before registration", async () => {
-    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-account-root-"));
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-account-root-")).then(realpath);
     try {
         const pi = fakePi();
         const extension = createPiClaudeCodeProvider({
@@ -543,7 +543,7 @@ test("account-specific provider descriptors require a valid identity fingerprint
 });
 
 test("account-specific provider startup uses the validated descriptor snapshot", async () => {
-    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-descriptor-snapshot-"));
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-descriptor-snapshot-")).then(realpath);
     const { directory, executable } = await createFakeClaude("ok", {
         configRootAuth: { [configRoot]: CONFIGURED_ACCOUNTS.primary.auth },
     });
@@ -602,7 +602,7 @@ test("account-specific providers reject missing, non-directory, relative, and no
 });
 
 test("account-specific startup labels only the instance with an invalid configuration root", async () => {
-    const primaryRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-"));
+    const primaryRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")).then(realpath);
     const missingRoot = join(primaryRoot, "missing-secondary");
     const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
     process.env.PI_CLAUDE_CODE_PROVIDER_PATH = join(primaryRoot, "unavailable-claude");
@@ -655,7 +655,7 @@ test("account-specific providers reject symlink-ambiguous configuration roots be
 });
 
 test("account-specific providers fail closed when a root resolves the wrong account identity", async () => {
-    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-wrong-account-"));
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-wrong-account-")).then(realpath);
     const { directory, executable } = await createFakeClaude("ok", {
         configRootAuth: { [configRoot]: CONFIGURED_ACCOUNTS.secondary.auth },
     });
@@ -690,8 +690,8 @@ test("account-specific providers fail closed when a root resolves the wrong acco
 
 test("account-specific startup identifies the configured instance that fails preflight", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")).then(realpath),
     ]);
     const { directory, executable } = await createFakeClaude("ok", {
         configRootAuth: {
@@ -733,7 +733,7 @@ test("account-specific startup identifies the configured instance that fails pre
 });
 
 test("account-specific providers fail closed on unsupported authentication", async () => {
-    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-unsupported-auth-"));
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-unsupported-auth-")).then(realpath);
     const unsupportedAuth = { ...CONFIGURED_ACCOUNTS.primary.auth, authMethod: "apiKey" };
     const { directory, executable } = await createFakeClaude("ok", {
         configRootAuth: { [configRoot]: unsupportedAuth },
@@ -763,7 +763,7 @@ test("account-specific providers fail closed on unsupported authentication", asy
 });
 
 test("account-specific startup failures redact the bound configuration root", async () => {
-    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-redacted-root-"));
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-redacted-root-")).then(realpath);
     const { directory, executable } = await createFakeClaude("ok", { failAuthWithConfigRoot: true });
     const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
     process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
@@ -790,7 +790,7 @@ test("account-specific startup failures redact the bound configuration root", as
 });
 
 test("account-specific providers fail closed when the Claude executable is unavailable", async () => {
-    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-unavailable-executable-"));
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-unavailable-executable-")).then(realpath);
     const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
     process.env.PI_CLAUDE_CODE_PROVIDER_PATH = join(tmpdir(), "definitely-unavailable-claude");
     try {
@@ -814,8 +814,8 @@ test("account-specific providers fail closed when the Claude executable is unava
 
 test("account-specific providers register distinct stable provider IDs", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")).then(realpath),
     ]);
     const { directory, executable } = await createFakeClaude("ok", {
         configRootAuth: configuredAuthByRoot(primaryRoot, secondaryRoot),
@@ -847,8 +847,8 @@ test("account-specific providers register distinct stable provider IDs", async (
 
 test("configured failover advertises the most conservative shared model limits", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")).then(realpath),
     ]);
     const auth = configuredAuthByRoot(primaryRoot, secondaryRoot);
     auth[primaryRoot] = { ...auth[primaryRoot], subscriptionType: "max" };
@@ -883,8 +883,8 @@ test("configured failover advertises the most conservative shared model limits",
 
 test("each account-specific provider request uses only its bound Claude configuration root", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")).then(realpath),
     ]);
     const { directory, executable } = await createFakeClaude("unbound", {
         configRootResults: {
@@ -928,8 +928,8 @@ test("each account-specific provider request uses only its bound Claude configur
 
 test("configured failover retries an unseen rate-limit rejection and sticks to the standby account", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")).then(realpath),
     ]);
     const requestLogPath = join(primaryRoot, "requests.log");
     const rejected = { status: "rejected", rateLimitType: "five_hour", resetsAt: Date.now() + 60_000 };
@@ -946,7 +946,9 @@ test("configured failover retries an unseen rate-limit rejection and sticks to t
         requestLogPath,
     });
     const original = process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
+    const originalAcknowledgement = process.env.PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM;
     process.env.PI_CLAUDE_CODE_PROVIDER_PATH = executable;
+    process.env.PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM = platformStatus().current;
     try {
         const pi = fakePi();
         await createPiClaudeCodeProvider({
@@ -988,6 +990,8 @@ test("configured failover retries an unseen rate-limit rejection and sticks to t
     } finally {
         if (original === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_PATH;
         else process.env.PI_CLAUDE_CODE_PROVIDER_PATH = original;
+        if (originalAcknowledgement === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_ACKNOWLEDGED_PLATFORM = originalAcknowledgement;
         await Promise.all([
             rm(primaryRoot, { recursive: true, force: true }),
             rm(secondaryRoot, { recursive: true, force: true }),
@@ -998,8 +1002,8 @@ test("configured failover retries an unseen rate-limit rejection and sticks to t
 
 test("configured failover retries when Claude reports the rejection as a 429 error result", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")).then(realpath),
     ]);
     const requestLogPath = join(primaryRoot, "requests.log");
     const rejected = { status: "rejected", rateLimitType: "five_hour", resetsAt: Date.now() + 60_000 };
@@ -1173,8 +1177,8 @@ test("configured failover names accounts rejected with an already-past reset", a
 
 test("configured failover reports labeled exhaustion after trying each account once", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")).then(realpath),
     ]);
     const requestLogPath = join(primaryRoot, "requests.log");
     const rejected = { status: "rejected", rateLimitType: "five_hour" };
@@ -1228,8 +1232,8 @@ test("configured failover reports labeled exhaustion after trying each account o
 
 test("configured failover never retries after assistant output becomes visible", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")).then(realpath),
     ]);
     const requestLogPath = join(primaryRoot, "requests.log");
     const rejected = { status: "rejected", rateLimitType: "five_hour", resetsAt: Date.now() + 60_000 };
@@ -1280,8 +1284,8 @@ test("configured failover never retries after assistant output becomes visible",
 
 test("configured failover preserves a protocol failure that follows a rate-limit notice", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")).then(realpath),
     ]);
     const requestLogPath = join(primaryRoot, "requests.log");
     const rejected = { status: "rejected", rateLimitType: "five_hour" };
@@ -1328,8 +1332,8 @@ test("configured failover preserves a protocol failure that follows a rate-limit
 
 test("configured failover does not switch accounts for a non-rate-limit failure", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")).then(realpath),
     ]);
     const requestLogPath = join(primaryRoot, "requests.log");
     const { directory, executable } = await createFakeClaude("unbound", {
@@ -1372,7 +1376,7 @@ test("configured failover does not switch accounts for a non-rate-limit failure"
 });
 
 test("account-specific request failures redact the bound configuration root", async () => {
-    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-request-redaction-"));
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-request-redaction-")).then(realpath);
     const { directory, executable } = await createFakeClaude("ok", {
         configRootAuth: { [configRoot]: CONFIGURED_ACCOUNTS.primary.auth },
         failRequestWithConfigRoot: true,
@@ -1413,8 +1417,8 @@ test("account-specific request failures redact the bound configuration root", as
 
 test("web search runs under the configured instance that owns the active model", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")).then(realpath),
     ]);
     const requestLogPath = join(primaryRoot, "requests.log");
     const { directory, executable } = await createFakeClaude("unbound", {
@@ -1453,8 +1457,8 @@ test("web search runs under the configured instance that owns the active model",
 
 test("the account-specific doctor checks every bound root and reports labels without paths", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")).then(realpath),
     ]);
     const ineligibleAuth = { loggedIn: false };
     const { directory, executable } = await createFakeClaude("ok", {
@@ -1491,8 +1495,8 @@ test("the account-specific doctor checks every bound root and reports labels wit
 
 test("the account-specific doctor does not attribute process-wide request metrics to each account", async () => {
     const [primaryRoot, secondaryRoot] = await Promise.all([
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")).then(realpath),
     ]);
     const { directory, executable } = await createFakeClaude("ok", {
         configRootAuth: configuredAuthByRoot(primaryRoot, secondaryRoot),
@@ -1535,7 +1539,7 @@ test("the account-specific doctor does not attribute process-wide request metric
 });
 
 test("the account-specific doctor fully redacts nested configuration roots", async () => {
-    const parentRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-parent-root-"));
+    const parentRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-parent-root-")).then(realpath);
     const nestedRoot = join(parentRoot, "nested-secret-root");
     await mkdir(nestedRoot);
     const successful = await createFakeClaude("ok", {
@@ -1574,9 +1578,9 @@ test("the account-specific doctor fully redacts nested configuration roots", asy
 
 test("the account-specific doctor attributes an invalid root only to the affected instance", async () => {
     const [primaryRoot, secondaryRoot, replacementRoot] = await Promise.all([
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-replacement-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-replacement-")).then(realpath),
     ]);
     const { directory, executable } = await createFakeClaude("ok", {
         configRootAuth: configuredAuthByRoot(primaryRoot, secondaryRoot),
@@ -1621,8 +1625,8 @@ test("the account-specific doctor attributes an invalid root only to the affecte
 });
 
 test("the account-specific doctor rejects a configuration root replaced by a symlink", async () => {
-    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-doctor-root-"));
-    const replacementRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-doctor-replacement-"));
+    const configRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-doctor-root-")).then(realpath);
+    const replacementRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-doctor-replacement-")).then(realpath);
     const { directory, executable } = await createFakeClaude("ok", {
         configRootAuth: { [configRoot]: CONFIGURED_ACCOUNTS.primary.auth },
     });
@@ -1697,8 +1701,8 @@ test("configured accounts report and deduplicate rate-limit warnings independent
         resetsAt: 1_800_000_000,
     };
     const [primaryRoot, secondaryRoot] = await Promise.all([
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
-        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")).then(realpath),
+        mkdtemp(join(tmpdir(), "pi-claude-code-provider-secondary-")).then(realpath),
     ]);
     const { directory, executable } = await createFakeClaude("ok", {
         rateLimitInfo: [warning, warning],
