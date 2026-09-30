@@ -27,7 +27,9 @@ import type { RateLimitNoticeSink } from "./claude-protocol.ts";
 import { ClaudeEventMapper, type ClaudeTerminationCause } from "./stream-events.ts";
 import type { ClaudeInstallation, LogicalProviderPayload, MutableOutput, RequestMetrics } from "./types.ts";
 
-const DEFAULT_MCP_READY_TIMEOUT_MS = 5_000;
+// This covers Claude Code startup as well as the bridge's tools/list handshake.
+// A launchable bridge can exceed five seconds on a loaded host.
+const DEFAULT_MCP_READY_TIMEOUT_MS = 30_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_TOTAL_TIMEOUT_MS = 30 * 60_000;
 /** Internal dependency seam for deterministic cleanup-failure tests. */
