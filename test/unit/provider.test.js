@@ -1153,6 +1153,43 @@ test("provider reports malformed JSONL and early MCP exit without hanging", asyn
         await rm(early.dir, { recursive: true, force: true });
     }
 });
+test("provider accepts a real MCP handshake after slow Claude startup", { timeout: 20_000 }, async () => {
+    const fake = await fakeClaude(`
+const { spawn } = require("node:child_process");
+const config = JSON.parse(process.argv[process.argv.indexOf("--mcp-config") + 1]);
+const server = config.mcpServers.pi;
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify(${JSON.stringify(toolInit)}) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "slow startup ok", usage: {} }) + "\\n");
+});
+setTimeout(() => {
+  const bridge = spawn(server.command, server.args, { env: { ...process.env, ...server.env }, stdio: ["pipe", "ignore", "inherit"] });
+  bridge.stdin.end(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) + "\\n" + JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }) + "\\n");
+}, 6_000);`, { writeReady: false });
+    const originalReady = process.env.PI_CLAUDE_CODE_PROVIDER_MCP_READY_TIMEOUT_MS;
+    const originalIdle = process.env.PI_CLAUDE_CODE_PROVIDER_IDLE_TIMEOUT_MS;
+    const originalTotal = process.env.PI_CLAUDE_CODE_PROVIDER_TOTAL_TIMEOUT_MS;
+    delete process.env.PI_CLAUDE_CODE_PROVIDER_MCP_READY_TIMEOUT_MS;
+    delete process.env.PI_CLAUDE_CODE_PROVIDER_IDLE_TIMEOUT_MS;
+    delete process.env.PI_CLAUDE_CODE_PROVIDER_TOTAL_TIMEOUT_MS;
+    try {
+        const result = await createClaudeStream({ executable: fake.executable, version: "test", subscriptionType: "pro" })(model, toolContext).result();
+        assert.equal(result.stopReason, "stop", result.errorMessage);
+        assert.deepEqual(result.content, [{ type: "text", text: "slow startup ok" }]);
+        const metrics = await waitForRequestMetrics((entry) => entry.lastPhase === "completed");
+        assert.equal(metrics.cleanupComplete, true);
+    }
+    finally {
+        if (originalReady === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_MCP_READY_TIMEOUT_MS;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_MCP_READY_TIMEOUT_MS = originalReady;
+        if (originalIdle === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_IDLE_TIMEOUT_MS;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_IDLE_TIMEOUT_MS = originalIdle;
+        if (originalTotal === undefined) delete process.env.PI_CLAUDE_CODE_PROVIDER_TOTAL_TIMEOUT_MS;
+        else process.env.PI_CLAUDE_CODE_PROVIDER_TOTAL_TIMEOUT_MS = originalTotal;
+        await rm(fake.dir, { recursive: true, force: true });
+    }
+});
 test("MCP readiness has a bounded timeout even while the process remains alive", async () => {
     const directory = await mkdtemp(join(tmpdir(), "provider-ready-timeout-"));
     try {
