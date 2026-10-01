@@ -312,6 +312,22 @@ test("rejects a tool acknowledgement while arguments remain incomplete", () => {
     mapper.accept({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_open", name: "mcp__pi__read", input: {} } } });
     assert.throws(() => mapper.accept(exactToolTerminationResult(), "tool_handoff"), /unclosed content blocks/);
 });
+test("accepts a plain Pi tool name from the session map and still rejects unknown names", () => {
+    const toolNames = new Map([["mcp__pi__bash", "bash"], ["mcp__pi__read", "read"]]);
+    const start = (name) => {
+        const output = createOutput(model);
+        const mapper = makeMapper(createAssistantMessageEventStream(), output, new Set(toolNames.keys()), toolNames, () => { });
+        mapper.accept(initRecord([...toolNames.keys()], [{ name: "pi", status: "connected" }]));
+        mapper.accept({ type: "stream_event", event: { type: "message_start", message: { id: "msg_plain", model: "claude-sonnet-5", usage: {} } } });
+        mapper.accept({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_plain", name, input: {} } } });
+        return output;
+    };
+    const tool = start("bash").content[0];
+    assert.equal(tool?.type, "toolCall");
+    assert.equal(tool?.name, "bash");
+    assert.throws(() => start("Bash"), (error) => error.code === "tool_unknown" && /unknown tool: Bash/.test(error.message));
+    assert.throws(() => start("mcp__pi__write"), (error) => error.code === "tool_unknown");
+});
 test("emits validated rate-limit notices and retains rejected diagnostics", () => {
     // Repeats are de-duplicated per session by the extension, not here; see
     // extension.test.js "reports a repeated rate-limit warning once per session".

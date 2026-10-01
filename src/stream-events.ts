@@ -268,7 +268,9 @@ export class ClaudeEventMapper {
       this.stream.push({ type: "thinking_start", contentIndex, partial: this.output });
     } else if (source.type === "tool_use") {
       const qualifiedName = typeof source.name === "string" ? source.name : "";
-      const name = this.toolNames.get(qualifiedName);
+      // Claude Code sometimes copies the plain Pi name from the serialized toolNameMap; accept it only on an exact match.
+      const name = this.toolNames.get(qualifiedName) ??
+        ([...this.toolNames.values()].includes(qualifiedName) ? qualifiedName : undefined);
       if (!name) throw new ClaudeCodeError("tool_unknown", `Claude proposed an unknown tool: ${qualifiedName}`);
       if (typeof source.id !== "string" || source.id.length === 0) throw new ClaudeCodeError("tool_id", "Claude emitted a tool without an ID");
       const initial = source.input && typeof source.input === "object" && !Array.isArray(source.input)
