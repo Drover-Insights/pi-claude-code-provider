@@ -124,16 +124,30 @@ test("the transcript breakpoint turns off only through a valid setting", () => {
     const prepared = {
         directory: "/tmp/private",
         transcriptBlocks: ['{"record":0}', '{"record":1}'],
-        attachmentPaths: [],
+        transcriptImages: [[], []],
         systemPromptPath: "/tmp/private/system-prompt.txt",
         toolNames: new Map(),
         transcriptBytes: 1,
         catalogBytes: 0,
+        imageCount: 0,
         imageBytes: 0,
     };
     const { prompt } = providerArgs(prepared, "sonnet", "low", { transcriptBreakpoint: false });
     assert.equal(prompt.length, 2);
     assert.equal(prompt.some((block) => "cache_control" in block), false);
+    // With the breakpoint off, each record's images still follow it in place.
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } };
+    const withImages = providerArgs(
+        { ...prepared, transcriptImages: [[], [image]], imageCount: 1, imageBytes: 1 },
+        "sonnet",
+        "low",
+        { transcriptBreakpoint: false },
+    ).prompt;
+    assert.deepEqual(withImages, [
+        { type: "text", text: prepared.transcriptBlocks[0] },
+        { type: "text", text: prepared.transcriptBlocks[1] },
+        image,
+    ]);
     const name = "PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT";
     assert.equal(transcriptBreakpointEnabled({}), true);
     assert.equal(transcriptBreakpointEnabled({ [name]: "on" }), true);
@@ -145,7 +159,8 @@ test("proposal MCP server launches the bridge through the hosting runtime", () =
     const prepared = {
         directory: "/tmp/private",
         transcriptBlocks: ['{"protocol":"test"}'],
-        attachmentPaths: [],
+        transcriptImages: [[]],
+        imageCount: 0,
         systemPromptPath: "/tmp/private/system-prompt.txt",
         catalogPath: "/tmp/private/catalog.json",
         violationPath: "/tmp/private/violation",

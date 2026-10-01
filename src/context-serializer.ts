@@ -110,7 +110,7 @@ function validateImage(image: ImageContent, limits: RequestPreparationLimits): {
   if (typeof image.mimeType !== "string") {
     throw new ClaudeCodeError("content_shape", "Pi image content must contain a string mimeType");
   }
-  const extension = IMAGE_EXTENSIONS[image.mimeType];
+  const extension = Object.hasOwn(IMAGE_EXTENSIONS, image.mimeType) ? IMAGE_EXTENSIONS[image.mimeType] : undefined;
   if (!extension) throw new ClaudeCodeError("image_type", `Unsupported image type: ${image.mimeType}`);
   if (typeof image.data !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(image.data) || image.data.length % 4 !== 0) {
     throw new ClaudeCodeError("image_base64", "Image data is not valid base64");

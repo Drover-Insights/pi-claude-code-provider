@@ -130,6 +130,16 @@ test("rejects invalid image input", async () => {
     };
     await assert.rejects(prepareRequest(context), /base64/);
 });
+
+test("rejects an image type that names an inherited object property", async () => {
+    // The type is sent to Claude as media_type, so a prototype key must not pass as a known type.
+    for (const mimeType of ["constructor", "__proto__", "toString"]) {
+        await assert.rejects(
+            prepareRequest({ messages: [{ role: "user", content: [{ type: "image", data: "AAAA", mimeType }], timestamp: 1 }] }),
+            (error) => error.code === "image_type",
+        );
+    }
+});
 test("keeps prior transcript bytes stable when a turn is appended", async () => {
     const first = await prepareRequest({ messages: [{ role: "user", content: "first", timestamp: 1 }] });
     const second = await prepareRequest({ messages: [{ role: "user", content: "first", timestamp: 999 }, { role: "user", content: "second", timestamp: 2 }] });

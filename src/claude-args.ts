@@ -75,9 +75,10 @@ export function providerArgs(
   effort: string,
   options: { transcriptBreakpoint?: boolean } = {},
 ): { args: string[]; prompt: PromptBlock[] } {
-  // Each record's images follow it inline, ahead of the breakpoint, so they are
-  // part of the cached history. Claude Code silently drops an @-referenced
-  // image file over 256 KiB, so references are never used.
+  // Each record's images follow it inline. The breakpoint marks the last record's
+  // text, so earlier records' images are cached history and the last record's own
+  // images follow the breakpoint until a later request caches them. Claude Code
+  // silently drops an @-referenced image file over 256 KiB, so references are never used.
   const markedBlock = options.transcriptBreakpoint === false ? -1 : prepared.transcriptBlocks.length - 1;
   const prompt: PromptBlock[] = prepared.transcriptBlocks.flatMap((text, index) => [
     {
@@ -85,7 +86,7 @@ export function providerArgs(
       text,
       ...(index === markedBlock ? { cache_control: TRANSCRIPT_CACHE_CONTROL } : {}),
     },
-    ...(prepared.transcriptImages?.[index] ?? []),
+    ...(prepared.transcriptImages[index] ?? []),
   ]);
   const bridge = bridgeLaunch(prepared.bunConfigPath);
   const mcpConfig = prepared.catalogPath
