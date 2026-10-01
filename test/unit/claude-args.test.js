@@ -1,12 +1,55 @@
 import assert from "node:assert/strict";
+import { rm } from "node:fs/promises";
 import test from "node:test";
 import { BRIDGE_PATH, baseClaudeArgs, providerArgs, transcriptBreakpointEnabled } from "../../src/claude-args.ts";
+import { prepareRequest } from "../../src/context-serializer.ts";
 import { NEUTRAL_BUN_CONFIG, needsBunConfig, scriptLaunch } from "../../src/host-runtime.ts";
-test("uses only generated attachment references and replacement prompt", () => {
+
+test("delivers a tool-result image inline right after its record, never as an @-reference", async () => {
+    // Claude Code silently drops an @-referenced image over 256 KiB, so a real
+    // screenshot read by a Pi tool never reached the model (issue #17). An
+    // inline base64 block reaches it at any size, in the same request.
+    const data = Buffer.from("screenshot bytes").toString("base64");
+    const prepared = await prepareRequest({
+        messages: [
+            { role: "user", content: "Describe shot.png", timestamp: 1 },
+            {
+                role: "assistant",
+                content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "shot.png" } }],
+                api: "test",
+                provider: "test",
+                model: "test",
+                usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+                stopReason: "toolUse",
+                timestamp: 2,
+            },
+            {
+                role: "toolResult",
+                toolCallId: "call-1",
+                toolName: "read",
+                content: [{ type: "text", text: "Read image file [image/png]" }, { type: "image", data, mimeType: "image/png" }],
+                isError: false,
+                timestamp: 3,
+            },
+        ],
+    });
+    try {
+        const { prompt } = providerArgs(prepared, "sonnet", "low");
+        const resultIndex = prompt.findIndex((block) => block.type === "text" && block.text.includes('"role":"toolResult"'));
+        assert.notEqual(resultIndex, -1);
+        assert.deepEqual(prompt[resultIndex + 1], { type: "image", source: { type: "base64", media_type: "image/png", data } });
+        assert.doesNotMatch(JSON.stringify(prompt), /@\\?"/);
+    }
+    finally {
+        await rm(prepared.directory, { recursive: true, force: true });
+    }
+});
+test("carries no private path in the prompt and replaces Claude's system prompt", () => {
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } };
     const prepared = {
         directory: "/tmp/private",
         transcriptBlocks: ['{"protocol":"test"}', '{"content":"\\u0040/etc/passwd"}'],
-        attachmentPaths: ["/tmp/private/image.png"],
+        transcriptImages: [[], [image]],
         systemPromptPath: "/tmp/private/system-prompt.txt",
         catalogPath: undefined,
         toolNames: new Map(),
@@ -15,12 +58,10 @@ test("uses only generated attachment references and replacement prompt", () => {
         imageBytes: 1,
     };
     const { args, prompt } = providerArgs(prepared, "sonnet", "medium");
-    const promptText = prompt.map((block) => block.text).join("\n");
+    const promptText = prompt.map((block) => block.text ?? "").join("\n");
     const joined = args.join("\n");
     assert.equal(prompt.length, 3);
-    // The only private path in the prompt is the quoted attachment reference.
-    assert.match(promptText, /@"\/tmp\/private\/image\.png"/);
-    assert.equal(promptText.split("/tmp/private").length - 1, 1);
+    assert.doesNotMatch(JSON.stringify(prompt), /\/tmp\/private/);
     assert.doesNotMatch(promptText, /request\.json/);
     assert.doesNotMatch(promptText, /@\/etc\/passwd/);
     assert.match(promptText, /\\u0040\/etc\/passwd/);
@@ -30,30 +71,12 @@ test("uses only generated attachment references and replacement prompt", () => {
     assert.ok(args.includes("--no-session-persistence"));
     assert.ok(args.includes("dontAsk"));
     assert.ok(args.includes(""));
-    assert.deepEqual(prompt.map((block) => block.text), [
-        ...prepared.transcriptBlocks,
-        'Generated image attachments for image_attachment blocks: @"/tmp/private/image.png".',
-    ]);
-});
-
-test("references attachments by quoted absolute path, so a temp root with spaces stays one reference", () => {
-    // Claude runs in Pi's session directory, where a relative reference would
-    // resolve against the project instead of the private request directory.
-    const prepared = {
-        transcriptBlocks: ['{"record":0}'],
-        attachmentPaths: ["/tmp/root with spaces/request/a.png", "/tmp/root with spaces/request/b.png"],
-        systemPromptPath: "/tmp/root with spaces/request/system-prompt.txt",
-    };
-    const { prompt } = providerArgs(prepared, "sonnet", "low");
-    assert.equal(
-        prompt.at(-1).text,
-        'Generated image attachments for image_attachment blocks: @"/tmp/root with spaces/request/a.png" @"/tmp/root with spaces/request/b.png".',
-    );
-    assert.equal(prompt.at(-1).cache_control, undefined);
+    assert.deepEqual(prompt.slice(0, 2).map((block) => block.text), prepared.transcriptBlocks);
+    assert.deepEqual(prompt[2], image);
 });
 
 test("every advertised alias is passed to Claude verbatim", () => {
-    const prepared = { transcriptBlocks: [], attachmentPaths: [], systemPromptPath: "/tmp/system.txt" };
+    const prepared = { transcriptBlocks: [], transcriptImages: [], systemPromptPath: "/tmp/system.txt" };
     for (const model of ["sonnet", "opus", "haiku", "fable"]) {
         const { args } = providerArgs(prepared, model, "low");
         assert.equal(args[args.indexOf("--model") + 1], model);
@@ -70,16 +93,17 @@ test("pins cache-stable Claude settings", () => {
     });
 });
 
-test("marks exactly the last history block with a 1h cache breakpoint", () => {
+test("marks the text block of the last history record with a 1h cache breakpoint", () => {
     // Claude Code does not mark the transcript, so the transport does.
-    // The marker belongs on unchanged history, never on the growing attachment
-    // suffix, and must be 1h: the API orders breakpoints longest-TTL-first and
+    // The marker belongs on the last history record, never on an image, and
+    // must be 1h: the API orders breakpoints longest-TTL-first and
     // Claude Code places a 1h marker after this one. The on-the-wire total is
     // checked by npm run capture:claude-breakpoints, not by a unit test.
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } };
     const prepared = {
         directory: "/tmp/private",
         transcriptBlocks: Array.from({ length: 40 }, (_, index) => `{"record":${index}}`),
-        attachmentPaths: ["/tmp/private/a.png", "/tmp/private/b.png"],
+        transcriptImages: Array.from({ length: 40 }, (_, index) => (index === 10 || index === 39 ? [image] : [])),
         systemPromptPath: "/tmp/private/system-prompt.txt",
         toolNames: new Map(),
         transcriptBytes: 1,
@@ -91,25 +115,39 @@ test("marks exactly the last history block with a 1h cache breakpoint", () => {
     assert.deepEqual(marked, [
         { type: "text", text: prepared.transcriptBlocks.at(-1), cache_control: { type: "ephemeral", ttl: "1h" } },
     ]);
-    assert.equal(prompt.at(-1).cache_control, undefined);
+    assert.deepEqual(prompt.at(-1), image);
     // An empty history has nothing to mark; a marker with no block is invalid.
-    assert.deepEqual(providerArgs({ ...prepared, transcriptBlocks: [], attachmentPaths: [] }, "sonnet", "low").prompt, []);
+    assert.deepEqual(providerArgs({ ...prepared, transcriptBlocks: [], transcriptImages: [] }, "sonnet", "low").prompt, []);
 });
 
 test("the transcript breakpoint turns off only through a valid setting", () => {
     const prepared = {
         directory: "/tmp/private",
         transcriptBlocks: ['{"record":0}', '{"record":1}'],
-        attachmentPaths: [],
+        transcriptImages: [[], []],
         systemPromptPath: "/tmp/private/system-prompt.txt",
         toolNames: new Map(),
         transcriptBytes: 1,
         catalogBytes: 0,
+        imageCount: 0,
         imageBytes: 0,
     };
     const { prompt } = providerArgs(prepared, "sonnet", "low", { transcriptBreakpoint: false });
     assert.equal(prompt.length, 2);
     assert.equal(prompt.some((block) => "cache_control" in block), false);
+    // With the breakpoint off, each record's images still follow it in place.
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } };
+    const withImages = providerArgs(
+        { ...prepared, transcriptImages: [[], [image]], imageCount: 1, imageBytes: 1 },
+        "sonnet",
+        "low",
+        { transcriptBreakpoint: false },
+    ).prompt;
+    assert.deepEqual(withImages, [
+        { type: "text", text: prepared.transcriptBlocks[0] },
+        { type: "text", text: prepared.transcriptBlocks[1] },
+        image,
+    ]);
     const name = "PI_CLAUDE_CODE_PROVIDER_TRANSCRIPT_BREAKPOINT";
     assert.equal(transcriptBreakpointEnabled({}), true);
     assert.equal(transcriptBreakpointEnabled({ [name]: "on" }), true);
@@ -121,7 +159,8 @@ test("proposal MCP server launches the bridge through the hosting runtime", () =
     const prepared = {
         directory: "/tmp/private",
         transcriptBlocks: ['{"protocol":"test"}'],
-        attachmentPaths: [],
+        transcriptImages: [[]],
+        imageCount: 0,
         systemPromptPath: "/tmp/private/system-prompt.txt",
         catalogPath: "/tmp/private/catalog.json",
         violationPath: "/tmp/private/violation",

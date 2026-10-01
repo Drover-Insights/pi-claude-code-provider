@@ -154,7 +154,8 @@ setTimeout(() => {
         const captured = JSON.parse(await readFile(join(fake.dir, "captured-preparation"), "utf8"));
         assert.equal(captured.systemPrompt, "replacement system");
         assert.deepEqual(captured.catalog, [{ name: "read", description: "read", inputSchema: toolContext.tools[0].parameters }]);
-        assert.ok(captured.files.some((name) => /^image-[0-9a-f]{64}\.png$/.test(name)));
+        // Images travel inline in the prompt, so none is written to the private directory.
+        assert.equal(captured.files.some((name) => name.startsWith("image-")), false);
         const metrics = await waitForRequestMetrics((entry) => entry.stopReason === "stop");
         assert.equal(metrics.schemaVersion, 4);
         assert.equal(metrics.messageCount, replacement.messages.length);
@@ -1662,34 +1663,5 @@ test("provider does not retry elsewhere when the session directory disappears af
     }
     finally {
         await Promise.all([root, fake.dir].map((directory) => rm(directory, { recursive: true, force: true })));
-    }
-});
-
-test("provider rejects image attachments from a temporary directory containing a double quote before launch", { skip: process.platform === "win32" }, async () => {
-    const root = await mkdtemp(join(tmpdir(), "provider-quoted-temp-"));
-    const quotedRoot = join(root, 'temp"root');
-    await mkdir(quotedRoot);
-    const originalTmpdir = process.env.TMPDIR;
-    process.env.TMPDIR = quotedRoot;
-    try {
-        let claims = 0;
-        const imageContext = {
-            messages: [{ role: "user", content: [{ type: "text", text: "look" }, { type: "image", data: "AA==", mimeType: "image/png" }], timestamp: 1 }],
-            tools: [],
-        };
-        const result = await createClaudeStream(
-            { executable: join(root, "never-launched"), version: "test", subscriptionType: "pro" },
-            { workingDirectory: () => root, claimLaunch: async () => { claims += 1; } },
-        )(model, imageContext, { reasoning: "medium" }).result();
-        assert.equal(result.stopReason, "error");
-        assert.match(result.errorMessage ?? "", /double quote/);
-        assert.equal(claims, 0);
-        await waitForRequestMetrics((entry) => entry.errorCategory === "image_path");
-        assert.deepEqual(await readdir(quotedRoot), []);
-    }
-    finally {
-        if (originalTmpdir === undefined) delete process.env.TMPDIR;
-        else process.env.TMPDIR = originalTmpdir;
-        await rm(root, { recursive: true, force: true });
     }
 });

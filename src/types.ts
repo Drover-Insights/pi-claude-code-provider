@@ -18,11 +18,17 @@ export interface ClaudeAuthStatus {
   orgId?: unknown;
 }
 
+/** An image delivered inline in the prompt, in the Messages API's base64 form. */
+export interface PromptImage {
+  type: "image";
+  source: { type: "base64"; media_type: string; data: string };
+}
+
 export interface PreparedRequest {
   directory: string;
-  imageStoreDirectory?: string;
   transcriptBlocks: string[];
-  attachmentPaths: string[];
+  /** The images that follow each transcript block, index for index. */
+  transcriptImages: PromptImage[][];
   systemPromptPath: string;
   catalogPath?: string;
   violationPath?: string;
@@ -31,6 +37,7 @@ export interface PreparedRequest {
   toolNames: Map<string, string>;
   transcriptBytes: number;
   catalogBytes: number;
+  imageCount: number;
   imageBytes: number;
 }
 

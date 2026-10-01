@@ -2,12 +2,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
 import { Type } from "typebox";
 import { prepareRequest, prepareRequestWithLimits } from "../../src/context-serializer.ts";
 import { needsBunConfig } from "../../src/host-runtime.ts";
-import { SessionImageStore } from "../../src/session-image-store.ts";
 
 const transcript = (prepared) => prepared.transcriptBlocks.join("\n");
 
@@ -68,7 +67,11 @@ test("serializes Pi context, tools, literal at-paths, and images privately", asy
         assert.equal(messages[2].toolName, header.toolNameMap[0].transportName);
         assert.equal(messages[1].content[0].thinkingSignature, undefined);
         assert.equal(messages[1].usage, undefined);
-        assert.equal(prepared.attachmentPaths.length, 1);
+        assert.deepEqual(prepared.transcriptImages.map((images) => images.length), [0, 0, 0, 1]);
+        assert.deepEqual(prepared.transcriptImages[3][0], {
+            type: "image",
+            source: { type: "base64", media_type: "image/png", data: Buffer.from("image bytes").toString("base64") },
+        });
         assert.equal(prepared.toolNames.size, 1);
         // The private directory holds exactly what the transport needs and nothing
         // else. Under a standalone Pi that set also includes the neutral bunfig
@@ -76,9 +79,8 @@ test("serializes Pi context, tools, literal at-paths, and images privately", asy
         const files = (await readdir(prepared.directory)).sort();
         const expected = [".pi-claude-code-provider-runtime.json", "system-prompt.txt", "tools.json"];
         if (needsBunConfig()) expected.push("bunfig.toml");
-        assert.equal(files.length, expected.length + 1);
-        assert.deepEqual(files.filter((name) => !/^image-/.test(name)), expected.sort());
-        assert.equal(files.filter((name) => /^image-[a-f0-9]{64}\.png$/.test(name)).length, 1);
+        // Images travel inline, so none is written to disk.
+        assert.deepEqual(files, expected.sort());
     }
     finally {
         await rm(prepared.directory, { recursive: true, force: true });
@@ -127,6 +129,16 @@ test("rejects invalid image input", async () => {
         ],
     };
     await assert.rejects(prepareRequest(context), /base64/);
+});
+
+test("rejects an image type that names an inherited object property", async () => {
+    // The type is sent to Claude as media_type, so a prototype key must not pass as a known type.
+    for (const mimeType of ["constructor", "__proto__", "toString"]) {
+        await assert.rejects(
+            prepareRequest({ messages: [{ role: "user", content: [{ type: "image", data: "AAAA", mimeType }], timestamp: 1 }] }),
+            (error) => error.code === "image_type",
+        );
+    }
 });
 test("keeps prior transcript bytes stable when a turn is appended", async () => {
     const first = await prepareRequest({ messages: [{ role: "user", content: "first", timestamp: 1 }] });
@@ -249,12 +261,15 @@ test("keeps active, colliding, removed, and paired historical tool identities co
         await Promise.all([first, second].map((item) => rm(item.directory, { recursive: true, force: true })));
     }
 });
-test("deduplicates identical images and enforces the image-count limit", async () => {
+test("sends every image inline, counting each toward the limits", async () => {
     const image = { type: "image", data: Buffer.from("same image").toString("base64"), mimeType: "image/png" };
     const prepared = await prepareRequest({ messages: [{ role: "user", content: [image, image], timestamp: 1 }] });
     try {
-        assert.equal(prepared.attachmentPaths.length, 1);
-        assert.equal(prepared.imageBytes, Buffer.byteLength("same image"));
+        // Each image_attachment placeholder has its own inline block, and every
+        // inline copy is sent, so each counts toward the aggregate byte limit.
+        assert.equal(prepared.transcriptImages[1].length, 2);
+        assert.equal(prepared.imageCount, 2);
+        assert.equal(prepared.imageBytes, 2 * Buffer.byteLength("same image"));
     }
     finally {
         await rm(prepared.directory, { recursive: true, force: true });
@@ -317,7 +332,6 @@ test("aliases tool names Claude Code would rename, so its initialization matches
 });
 
 const pixels = (text) => ({ type: "image", data: Buffer.from(text).toString("base64"), mimeType: "image/png" });
-const imageName = (text) => `image-${createHash("sha256").update(text).digest("hex")}.png`;
 function assistantMessage(content, stopReason = "stop") {
     return {
         role: "assistant",
@@ -331,6 +345,8 @@ function assistantMessage(content, stopReason = "stop") {
     };
 }
 
+const inlined = (prepared) => prepared.transcriptImages.flat().map((image) => Buffer.from(image.source.data, "base64").toString());
+
 test("retains an earlier turn's image and append-stable transcript record", async () => {
     const imageTurn = { role: "user", content: [{ type: "text", text: "first screenshot" }, pixels("old image")], timestamp: 1 };
     const current = await prepareRequest({ messages: [imageTurn] });
@@ -338,45 +354,19 @@ test("retains an earlier turn's image and append-stable transcript record", asyn
         messages: [imageTurn, assistantMessage([{ type: "text", text: "seen" }]), { role: "user", content: "no image now", timestamp: 3 }],
     });
     try {
-        assert.deepEqual(current.attachmentPaths.map((path) => basename(path)), [imageName("old image")]);
-        assert.deepEqual(later.attachmentPaths.map((path) => basename(path)), [imageName("old image")]);
+        assert.deepEqual(inlined(current), ["old image"]);
+        assert.deepEqual(inlined(later), ["old image"]);
         assert.equal(later.imageBytes, Buffer.byteLength("old image"));
-        // The record is unchanged, so the history prefix the earlier request cached still matches.
+        // The record and its inline image are unchanged, so the history prefix the earlier request cached still matches.
         assert.deepEqual(later.transcriptBlocks.slice(0, current.transcriptBlocks.length), current.transcriptBlocks);
+        assert.deepEqual(later.transcriptImages.slice(0, current.transcriptImages.length), current.transcriptImages);
     }
     finally {
         await Promise.all([current, later].map((item) => rm(item.directory, { recursive: true, force: true })));
     }
 });
 
-test("session image store reattaches an answered image at the same private path", async () => {
-    const store = new SessionImageStore();
-    store.open();
-    const firstLease = store.acquire();
-    const laterLease = store.acquire();
-    let first;
-    let later;
-    try {
-        const imageTurn = { role: "user", content: [{ type: "text", text: "look left" }, pixels("historic image")], timestamp: 1 };
-        first = await prepareRequest({ messages: [imageTurn] }, firstLease);
-        later = await prepareRequest({
-            messages: [imageTurn, assistantMessage([{ type: "text", text: "left side seen" }]), { role: "user", content: "look right", timestamp: 3 }],
-        }, laterLease);
-        const stablePath = join(first.imageStoreDirectory, imageName("historic image"));
-        assert.notEqual(first.directory, later.directory);
-        assert.deepEqual(first.attachmentPaths, [stablePath]);
-        assert.deepEqual(later.attachmentPaths, [stablePath]);
-        assert.equal((await readFile(stablePath)).toString(), "historic image");
-        assert.deepEqual(later.transcriptBlocks.slice(0, first.transcriptBlocks.length), first.transcriptBlocks);
-    } finally {
-        firstLease.release();
-        laterLease.release();
-        await Promise.all([first?.directory, later?.directory].filter(Boolean).map((directory) => rm(directory, { recursive: true, force: true })));
-        await store.close();
-    }
-});
-
-test("attaches historical, current, and tool-result images", async () => {
+test("attaches historical, current, and tool-result images after their own records", async () => {
     const prepared = await prepareRequest({
         messages: [
             { role: "user", content: [pixels("old")], timestamp: 1 },
@@ -387,7 +377,10 @@ test("attaches historical, current, and tool-result images", async () => {
         ],
     });
     try {
-        assert.deepEqual(prepared.attachmentPaths.map((path) => basename(path)), [imageName("old"), imageName("current"), imageName("tool result")]);
+        assert.deepEqual(inlined(prepared), ["old", "current", "tool result"]);
+        // Index 0 is the protocol header; each image follows the record that names it.
+        assert.deepEqual(prepared.transcriptImages.map((images) => images.length), [0, 1, 0, 1, 0, 1]);
+        assert.equal(prepared.transcriptImages.length, prepared.transcriptBlocks.length);
     }
     finally {
         await rm(prepared.directory, { recursive: true, force: true });
@@ -402,7 +395,7 @@ test("attaches an image sent in consecutive user messages before any reply", asy
         ],
     });
     try {
-        assert.deepEqual(prepared.attachmentPaths.map((path) => basename(path)), [imageName("unanswered")]);
+        assert.deepEqual(inlined(prepared), ["unanswered"]);
     }
     finally {
         await rm(prepared.directory, { recursive: true, force: true });
@@ -419,7 +412,7 @@ test("attaches a tool-result image when steering arrives before the next reply",
         ],
     });
     try {
-        assert.deepEqual(prepared.attachmentPaths.map((path) => basename(path)), [imageName("answered"), imageName("tool result")]);
+        assert.deepEqual(inlined(prepared), ["answered", "tool result"]);
     }
     finally {
         await rm(prepared.directory, { recursive: true, force: true });
@@ -435,7 +428,7 @@ test("keeps attaching an image whose request failed before any reply", async () 
         ],
     });
     try {
-        assert.deepEqual(prepared.attachmentPaths.map((path) => basename(path)), [imageName("unanswered")]);
+        assert.deepEqual(inlined(prepared), ["unanswered"]);
     }
     finally {
         await rm(prepared.directory, { recursive: true, force: true });
@@ -463,35 +456,23 @@ test("counts historical images toward the 20-image limit", async () => {
     }), (error) => error.code === "image_count" && /At most 20 images/.test(error.message));
 });
 
-test("attaches images by absolute path under a temp root with spaces, and refuses a root containing a double quote", { skip: process.platform === "win32" }, async () => {
+test("writes no image file, so a temp root containing a double quote no longer blocks images", { skip: process.platform === "win32" }, async () => {
     const fixture = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-attachment-root-"));
-    const spaced = join(fixture, "root with spaces");
     const quoted = join(fixture, 'root "quoted"');
-    await mkdir(spaced);
     await mkdir(quoted);
     const image = { type: "image", data: Buffer.from("png!").toString("base64"), mimeType: "image/png" };
-    const context = { messages: [{ role: "user", content: [image], timestamp: 1 }] };
     try {
-        const prepared = await prepareRequestWithLimits(context, {}, spaced);
+        const prepared = await prepareRequestWithLimits({ messages: [{ role: "user", content: [image], timestamp: 1 }] }, {}, quoted);
         try {
-            assert.equal(prepared.attachmentPaths.length, 1);
-            assert.equal(prepared.attachmentPaths[0].startsWith(`${prepared.directory}/`), true);
-            assert.equal(prepared.directory.includes("root with spaces"), true);
-            // Claude runs in Pi's session directory, not this one, so the header
-            // must not describe Claude's cwd as provider-private.
+            assert.deepEqual(inlined(prepared), ["png!"]);
+            assert.equal((await readdir(prepared.directory)).some((name) => name.startsWith("image-")), false);
             const header = JSON.parse(prepared.transcriptBlocks[0]);
-            assert.match(header.instruction, /Generated attachments are provider-private; never pass their paths to Pi tools\./);
-            assert.doesNotMatch(header.instruction, /transport cwd/);
+            assert.match(header.instruction, /The image for each image_attachment record follows that record\./);
+            assert.doesNotMatch(header.instruction, /transport cwd|provider-private/);
         }
         finally {
             await rm(prepared.directory, { recursive: true, force: true });
         }
-        // Claude Code's quoted @-reference cannot contain a double quote.
-        await assert.rejects(
-            prepareRequestWithLimits(context, {}, quoted),
-            (error) => error.code === "image_path" && /double quote/.test(error.message),
-        );
-        assert.deepEqual(await readdir(quoted), []);
     }
     finally {
         await rm(fixture, { recursive: true, force: true });

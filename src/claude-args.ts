@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { ClaudeCodeError } from "./errors.ts";
 import { scriptLaunch, type ScriptLaunch } from "./host-runtime.ts";
-import type { PreparedRequest } from "./types.ts";
+import type { PreparedRequest, PromptImage } from "./types.ts";
 
 // Empty setting sources plus explicit settings preserve subscription authentication
 // while suppressing user and project customizations. --bare would disable OAuth,
@@ -13,7 +13,7 @@ const EMPTY_MCP = JSON.stringify({ mcpServers: {} });
 export const BRIDGE_PATH = fileURLToPath(new URL("../bridge/mcp-proposal-server.js", import.meta.url));
 
 // Claude Code places no cache breakpoint inside the history this provider
-// replays, so the provider marks the last history block itself. The 1h
+// replays, so the provider marks the last history record's text block itself. The 1h
 // TTL is required by the API's longest-TTL-first ordering, not chosen for its
 // lifetime. DESIGN.md#compatibility-and-performance has the full account and cost.
 const TRANSCRIPT_CACHE_CONTROL = { type: "ephemeral", ttl: "1h" } as const;
@@ -32,11 +32,9 @@ export function transcriptBreakpointEnabled(environment: NodeJS.ProcessEnv = pro
   throw new ClaudeCodeError("breakpoint_config", `${TRANSCRIPT_BREAKPOINT_ENV} must be "on" or "off"`);
 }
 
-interface PromptBlock {
-  type: "text";
-  text: string;
-  cache_control?: typeof TRANSCRIPT_CACHE_CONTROL;
-}
+type PromptBlock =
+  | { type: "text"; text: string; cache_control?: typeof TRANSCRIPT_CACHE_CONTROL }
+  | PromptImage;
 
 /** The single owner of how the proposal bridge is launched on either Pi distribution. */
 export function bridgeLaunch(bunConfigPath?: string): ScriptLaunch {
@@ -77,25 +75,19 @@ export function providerArgs(
   effort: string,
   options: { transcriptBreakpoint?: boolean } = {},
 ): { args: string[]; prompt: PromptBlock[] } {
-  // Quoted absolute references: Claude runs in Pi's session directory, where a
-  // relative reference would resolve against the project, and the quotes keep a
-  // temporary root containing spaces in one reference.
-  const imageRefs = prepared.attachmentPaths.map((path) => `@"${path}"`).join(" ");
-  const imageInstruction = imageRefs
-    ? ` Generated image attachments for image_attachment blocks: ${imageRefs}.`
-    : "";
-  // Keep the attachment list after unchanged history and outside the breakpoint.
-  // Claude Code narrates image reads ahead of the transcript, so the paths must
-  // also stay stable across requests for that earlier prefix to be reusable.
+  // Each record's images follow it inline. The breakpoint marks the last record's
+  // text, so earlier records' images are cached history and the last record's own
+  // images follow the breakpoint until a later request caches them. Claude Code
+  // silently drops an @-referenced image file over 256 KiB, so references are never used.
   const markedBlock = options.transcriptBreakpoint === false ? -1 : prepared.transcriptBlocks.length - 1;
-  const prompt: PromptBlock[] = [
-    ...prepared.transcriptBlocks.map((text, index) => ({
+  const prompt: PromptBlock[] = prepared.transcriptBlocks.flatMap((text, index) => [
+    {
       type: "text" as const,
       text,
       ...(index === markedBlock ? { cache_control: TRANSCRIPT_CACHE_CONTROL } : {}),
-    })),
-    ...(imageInstruction ? [{ type: "text" as const, text: imageInstruction.trim() }] : []),
-  ];
+    },
+    ...(prepared.transcriptImages[index] ?? []),
+  ]);
   const bridge = bridgeLaunch(prepared.bunConfigPath);
   const mcpConfig = prepared.catalogPath
     ? JSON.stringify({

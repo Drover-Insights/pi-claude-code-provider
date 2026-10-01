@@ -8,9 +8,9 @@
 // provider's own providerArgs and buildClaudeEnvironment, so this follows the
 // provider instead of drifting from a hand-rebuilt copy of it.
 //
-// Two captures are taken with different private request directories but the
-// same session image store. That separates a missing transcript breakpoint
-// from a changing prefix caused by request paths or attachment references.
+// Two captures are taken with different private request directories. That
+// separates a missing transcript breakpoint from a changing prefix caused by
+// request paths or inline images.
 // A single capture cannot tell them apart.
 //
 // Like the provider, Claude runs in a project directory rather than the private
@@ -19,7 +19,7 @@
 // release that starts running git status at startup again executes the filter.
 // The verdict is BROKEN if that filter runs, a project file changes, Claude Code
 // reports no working directory or any other than the project, the private request
-// directory reaches the model outside attachment narration, or the proposal
+// directory reaches the model, or the proposal
 // bridge never becomes ready.
 //
 //   npm run capture:claude-breakpoints
@@ -36,7 +36,6 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { claudeExecutable, buildClaudeEnvironment } from "../src/auth.ts";
 import { providerArgs } from "../src/claude-args.ts";
-import { SessionImageStore } from "../src/session-image-store.ts";
 
 // Anthropic permits four cache breakpoints per request. A fifth is rejected
 // outright, so this is a hard ceiling rather than a quality signal.
@@ -55,7 +54,7 @@ const BLOCKS = [
 ];
 const SYSTEM_PROMPT = "You are an inert cache-shape probe. Answer the current request.";
 const CATALOG = [{ name: "probe", description: "Inert proposal only", inputSchema: { type: "object", properties: {} } }];
-// A 1x1 PNG, enough for the CLI to treat an @-reference as a real attachment.
+// A 1x1 PNG, enough for the CLI to forward a real inline image block.
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
   "base64",
@@ -153,27 +152,22 @@ async function snapshotTree(root) {
   return files;
 }
 
-async function captureOnce(options, executable, home, project, imageStore) {
+async function captureOnce(options, executable, home, project) {
   const { server, body, listening, port } = captureServer();
   await listening;
   const baseUrl = `http://127.0.0.1:${port()}`;
   // Mirror the provider: a fresh private request directory holds the system
-  // prompt and catalog, while generated images use session-stable paths.
+  // prompt and catalog, while images travel inline after their record.
   const directory = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-request-"));
-  const imageLease = imageStore.acquire();
   try {
     await writeFile(join(directory, "system-prompt.txt"), SYSTEM_PROMPT);
     await writeFile(join(directory, "tools.json"), JSON.stringify(CATALOG));
-    const attachmentPaths = [];
-    for (let index = 0; index < options.images; index++) {
-      const name = `image-${createHash("sha256").update(PNG).digest("hex")}.png`;
-      const path = await imageLease.put(name, PNG);
-      attachmentPaths.push(path);
-    }
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: PNG.toString("base64") } };
+    const transcriptImages = BLOCKS.map((_, index) => (index === 1 ? Array.from({ length: options.images }, () => image) : []));
     const prepared = {
       directory,
       systemPromptPath: join(directory, "system-prompt.txt"),
-      attachmentPaths,
+      transcriptImages,
       transcriptBlocks: BLOCKS,
       ...(options.tools
         ? {
@@ -212,7 +206,6 @@ async function captureOnce(options, executable, home, project, imageStore) {
     return { body: redact(JSON.parse(captured)), prompt, directory, bridgeReady };
   } finally {
     server.close();
-    imageLease.release();
     await rm(directory, { recursive: true, force: true });
   }
 }
@@ -251,8 +244,7 @@ function report(captures, options, startup) {
   console.log(`message roles:  ${(body.messages ?? []).map((message) => message.role).join(", ")}`);
   const marked = blocks.flatMap(([label, block], position) => (block.cache_control ? [{ position, label, block }] : []));
   // The last breakpoint inside the transcript marks the prefix a later request
-  // reuses. Only a change at or ahead of it invalidates that entry; the
-  // attachment list after it varies only when the effective image set changes.
+  // reuses. Only a change at or ahead of it invalidates that entry.
   const transcriptBreakpoint = marked.filter(({ position }) => position >= first && position <= last).at(-1)?.position ?? -1;
   console.log(`breakpoints:    ${marked.length} of ${MAX_BREAKPOINTS} permitted`);
   for (const { position, label, block } of marked) {
@@ -279,9 +271,7 @@ function report(captures, options, startup) {
   const reportedCwd = environment?.match(/Primary working directory: (.*)/)?.[1]?.trim();
   console.log(`project cwd:    ${startup.project}`);
   console.log(`environment:    ${reportedCwd === undefined ? "no working directory reported" : `Primary working directory ${reportedCwd}`}`);
-  // With attachments, Claude Code narrates each read by its private path; that is expected.
-  const privateLeak = captures.some(({ body: captured, directory }) =>
-    options.images > 0 ? (environment ?? "").includes(directory) : JSON.stringify(captured).includes(directory));
+  const privateLeak = captures.some(({ body: captured, directory }) => JSON.stringify(captured).includes(directory));
   const bridgeNotReady = options.tools && captures.some(({ bridgeReady }) => !bridgeReady);
   console.log(
     `startup:        ${startup.filterProbe ? `git clean filter ${startup.filterRan ? "RAN" : "did not run"}` : "git clean filter probe skipped on Windows"}; ` +
@@ -300,7 +290,7 @@ function report(captures, options, startup) {
           ? "BROKEN: Claude Code reported no working directory, so its environment block has changed shape"
           : "BROKEN: Claude Code reports a working directory other than the project, contradicting Pi's"
         : privateLeak
-          ? "BROKEN: the private request directory reaches the model outside attachment narration"
+          ? "BROKEN: the private request directory reaches the model"
           : bridgeNotReady
             ? "BROKEN: the proposal bridge was not ready when Claude Code sent its request"
             : marked.length > MAX_BREAKPOINTS
@@ -316,8 +306,6 @@ function report(captures, options, startup) {
 
 const options = parseOptions(process.argv.slice(2));
 const executable = options.claude ?? claudeExecutable();
-const imageStore = new SessionImageStore();
-imageStore.open();
 const home = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-capture-home-"));
 const markerRoot = await mkdtemp(join(tmpdir(), "pi-claude-code-provider-capture-marker-"));
 let captures;
@@ -327,8 +315,8 @@ try {
   fixture = await createProjectFixture(markerRoot);
   const before = await snapshotTree(fixture.project);
   captures = [
-    await captureOnce(options, executable, home, fixture.project, imageStore),
-    await captureOnce(options, executable, home, fixture.project, imageStore),
+    await captureOnce(options, executable, home, fixture.project),
+    await captureOnce(options, executable, home, fixture.project),
   ];
   const after = await snapshotTree(fixture.project);
   startup = {
@@ -338,7 +326,6 @@ try {
     changedFiles: [...new Set([...before.keys(), ...after.keys()])].filter((name) => before.get(name) !== after.get(name)),
   };
 } finally {
-  await imageStore.close();
   await Promise.all([home, markerRoot, fixture?.project].filter(Boolean).map((path) => rm(path, { recursive: true, force: true })));
 }
 const healthy = report(captures, options, startup);
