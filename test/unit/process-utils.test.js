@@ -124,6 +124,19 @@ test("process-group termination removes a descendant", { skip: process.platform 
     await terminateProcessGroup(parent);
     await assertProcessGone(pid);
 });
+test("supervisor termination waits the caller's grace for a slow clean SIGTERM exit", { skip: process.platform === "win32" }, async () => {
+    const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => setTimeout(() => process.exit(143), 1000)); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);"], { detached: true, stdio: ["pipe", "pipe", "pipe"] });
+    const supervisor = superviseProcess(child, { idleTimeoutMs: 10_000, totalTimeoutMs: 10_000, onFailure() { } });
+    try {
+        await new Promise((resolve) => child.stdout.once("data", resolve));
+        await supervisor.terminate(3000);
+        assert.deepEqual(await supervisor.wait(), { code: 143, signal: null });
+    }
+    finally {
+        supervisor.dispose();
+        await terminateProcessGroup(child);
+    }
+});
 test("process-group termination tolerates EPERM from an existence probe", { skip: process.platform === "win32" }, async () => {
     const parent = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
     let injected = false;
