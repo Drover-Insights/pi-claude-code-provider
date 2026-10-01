@@ -13,13 +13,17 @@ export interface ProcessSupervisorOptions {
   idleTimeoutMs: number;
   totalTimeoutMs: number;
   onFailure: (error: Error) => void;
-  terminate?: (child: ChildProcess) => Promise<void>;
+  terminate?: (child: ChildProcess, graceMs?: number) => Promise<void>;
 }
 
 export interface ProcessSupervisor {
   touch(): void;
   wait(): Promise<ProcessResult>;
-  terminate(): Promise<void>;
+  /**
+   * Memoized: the first call starts termination and fixes its SIGTERM grace;
+   * later calls return the same promise and their grace is ignored.
+   */
+  terminate(graceMs?: number): Promise<void>;
   dispose(): void;
 }
 
@@ -56,8 +60,8 @@ export function superviseProcess(child: ChildProcess, options: ProcessSupervisor
     if (totalTimer) clearTimeout(totalTimer);
   };
 
-  const terminate = (): Promise<void> => {
-    terminationPromise ??= (options.terminate ?? terminateProcessGroup)(child).catch((cause: unknown) => {
+  const terminate = (graceMs?: number): Promise<void> => {
+    terminationPromise ??= (options.terminate ?? terminateProcessGroup)(child, graceMs).catch((cause: unknown) => {
       // Cleanup can reject after close (for example, an injected post-exit
       // diagnostic). Only a child not known to have closed leaves liveness unknown.
       if (child.exitCode !== null || child.signalCode !== null) throw cause;

@@ -1048,6 +1048,30 @@ process.stdin.on("end", () => {
         await rm(fake.dir, { recursive: true, force: true });
     }
 });
+test("provider accepts a tool handoff when Claude takes over 500 ms to exit cleanly on SIGTERM", { skip: process.platform === "win32" }, async () => {
+    const fake = await fakeClaude(`
+process.on("SIGTERM", () => {
+  setTimeout(() => process.stdout.write(JSON.stringify(${JSON.stringify(toolTerminationResult)}) + "\\n", () => process.exit(143)), 1000);
+});
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify(${JSON.stringify(toolInit)}) + "\\n");
+  for (const record of ${JSON.stringify(toolUseEvents({ messageId: "msg_slow_exit", toolUseId: "toolu_slow_exit", partialJson: '{"path":"package.json"}' }))}) process.stdout.write(JSON.stringify(record) + "\\n");
+  setInterval(() => {}, 1000);
+});`);
+    try {
+        const result = await createClaudeStream({ executable: fake.executable, version: CAPTURED_CLAUDE_VERSION, subscriptionType: "pro" })(model, toolContext, { reasoning: "medium" }).result();
+        assert.equal(result.errorMessage, undefined);
+        assert.equal(result.stopReason, "toolUse");
+        const metrics = await waitForRequestMetrics((entry) => entry.stopReason === "toolUse" && entry.exitCode === 143);
+        assert.equal(metrics.exitSignal, null);
+        assert.equal(metrics.lastPhase, "completed");
+        assert.equal(metrics.cleanupComplete, true);
+    }
+    finally {
+        await rm(fake.dir, { recursive: true, force: true });
+    }
+});
 test("provider rejects an unexpected exit after the tool-handoff acknowledgement", { skip: process.platform === "win32" }, async () => {
     const fake = await fakeClaude(`
 process.on("SIGTERM", () => {

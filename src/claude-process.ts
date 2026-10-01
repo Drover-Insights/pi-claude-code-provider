@@ -54,9 +54,9 @@ export interface ClaudeProcess {
   /** Bounded stderr tail with the private directory redacted. */
   stderrExcerpt(): string;
   /** Memoized termination of the owned process tree; remembers the first failure. */
-  terminate(): Promise<void>;
+  terminate(graceMs?: number): Promise<void>;
   /** Terminate without awaiting; the failure stays observable through wait() and terminate(). */
-  terminateInBackground(): void;
+  terminateInBackground(graceMs?: number): void;
   isTerminationFailure(error: unknown): boolean;
   /** Remove the cancellation listener and release supervision. */
   dispose(): void;
@@ -100,18 +100,18 @@ export function spawnClaudeProcess(options: ClaudeProcessOptions): ClaudeProcess
     onFailure: options.onFailure,
   });
   let terminationFailure: unknown;
-  const terminate = async (): Promise<void> => {
+  const terminate = async (graceMs?: number): Promise<void> => {
     try {
-      await supervisor.terminate();
+      await supervisor.terminate(graceMs);
     } catch (error) {
       terminationFailure ??= error;
       throw error;
     }
   };
-  const terminateInBackground = (): void => {
+  const terminateInBackground = (graceMs?: number): void => {
     // The memoized termination is awaited again before the request settles, so
     // its failure is reported there rather than masking an earlier failure here.
-    void terminate().catch((error: unknown) => options.onBackgroundTerminationFailure?.(error));
+    void terminate(graceMs).catch((error: unknown) => options.onBackgroundTerminationFailure?.(error));
   };
   const abortHandler = (): void => {
     options.onAbort?.();

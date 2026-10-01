@@ -31,6 +31,11 @@ import type { ClaudeInstallation, LogicalProviderPayload, MutableOutput, Request
 const DEFAULT_MCP_READY_TIMEOUT_MS = 30_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_TOTAL_TIMEOUT_MS = 30 * 60_000;
+// Claude Code commonly takes 0.8 to 3 s to exit cleanly (code 143) after
+// SIGTERM at a tool handoff, so the handoff path starts termination with this
+// grace before SIGKILL; other paths start it with the short default. Termination
+// is memoized, so an abort or timeout arriving after a handoff reuses this grace.
+const TOOL_HANDOFF_TERMINATION_GRACE_MS = 5_000;
 /** Internal dependency seam for deterministic cleanup-failure tests. */
 type CleanupDirectory = (directory: string) => Promise<void>;
 
@@ -143,7 +148,7 @@ export function createClaudeStream(
         toolUse = true;
         terminationCause = "tool_handoff";
         metrics.terminationExpected = true;
-        claude?.terminateInBackground();
+        claude?.terminateInBackground(TOOL_HANDOFF_TERMINATION_GRACE_MS);
       };
 
       const finalizeLifecycle = async (): Promise<void> => {
