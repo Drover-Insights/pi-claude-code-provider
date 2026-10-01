@@ -13,7 +13,7 @@ const EMPTY_MCP = JSON.stringify({ mcpServers: {} });
 export const BRIDGE_PATH = fileURLToPath(new URL("../bridge/mcp-proposal-server.js", import.meta.url));
 
 // Claude Code places no cache breakpoint inside the history this provider
-// replays, so the provider marks the last history block itself. The 1h
+// replays, so the provider marks the last history record's text block itself. The 1h
 // TTL is required by the API's longest-TTL-first ordering, not chosen for its
 // lifetime. DESIGN.md#compatibility-and-performance has the full account and cost.
 const TRANSCRIPT_CACHE_CONTROL = { type: "ephemeral", ttl: "1h" } as const;
