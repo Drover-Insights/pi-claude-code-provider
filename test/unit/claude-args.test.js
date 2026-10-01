@@ -93,7 +93,7 @@ test("pins cache-stable Claude settings", () => {
     });
 });
 
-test("marks exactly the last history block with a 1h cache breakpoint", () => {
+test("marks the text block of the last history record with a 1h cache breakpoint", () => {
     // Claude Code does not mark the transcript, so the transport does.
     // The marker belongs on the last history record, never on an image, and
     // must be 1h: the API orders breakpoints longest-TTL-first and
