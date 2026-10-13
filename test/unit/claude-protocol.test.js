@@ -48,12 +48,38 @@ const builtinPlugins = [
     { name: "agents-md", path: "builtin", source: "agents-md@builtin" },
     { name: "telemetry", path: "builtin", source: "telemetry@builtin" },
 ];
+// Claude Code 2.1.296 renamed agents-md, dropped telemetry, and added plugin-authoring.
+const renamedBuiltinPlugins = [
+    { name: "cc-plugin-agents-md", path: "builtin", source: "cc-plugin-agents-md@builtin" },
+    { name: "cc-plugin-plugin-authoring", path: "builtin", source: "cc-plugin-plugin-authoring@builtin" },
+];
 const noTools = { tools: new Set(), mcpServer: "none" };
 
 test("accepts the builtin plugins Claude Code always reports", () => {
     assert.equal(validateClaudeInitialization({ ...base, plugins: builtinPlugins }, noTools), "claude-sonnet-5");
     assert.equal(validateClaudeInitialization({ ...base, plugins: [...builtinPlugins].reverse() }, noTools), "claude-sonnet-5");
     assert.equal(validateClaudeInitialization({ ...base, plugins: [builtinPlugins[1]] }, noTools), "claude-sonnet-5");
+});
+
+test("accepts the renamed builtin plugins Claude Code 2.1.296 reports", () => {
+    assert.equal(validateClaudeInitialization({ ...base, plugins: renamedBuiltinPlugins }, noTools), "claude-sonnet-5");
+    assert.equal(validateClaudeInitialization({ ...base, plugins: [...renamedBuiltinPlugins].reverse() }, noTools), "claude-sonnet-5");
+    assert.equal(validateClaudeInitialization({ ...base, plugins: [renamedBuiltinPlugins[0]] }, noTools), "claude-sonnet-5");
+    assert.equal(validateClaudeInitialization({ ...base, plugins: [renamedBuiltinPlugins[1]] }, noTools), "claude-sonnet-5");
+});
+
+test("rejects a mix of the original and renamed builtin plugin sets", () => {
+    for (const plugins of [
+        [builtinPlugins[0], renamedBuiltinPlugins[0]],
+        [builtinPlugins[1], renamedBuiltinPlugins[1]],
+        [...builtinPlugins, ...renamedBuiltinPlugins],
+    ]) {
+        assert.throws(
+            () => validateClaudeInitialization({ ...base, plugins }, noTools),
+            (error) => error.code === "isolation_customizations",
+            JSON.stringify(plugins),
+        );
+    }
 });
 
 test("rejects any plugin other than the exact builtin inventory", () => {
@@ -65,6 +91,10 @@ test("rejects any plugin other than the exact builtin inventory", () => {
         [{ ...agentsMd, extra: true }],
         [{ name: "agents-md", path: "builtin" }],
         [agentsMd, agentsMd],
+        [renamedBuiltinPlugins[1], renamedBuiltinPlugins[1]],
+        [{ ...renamedBuiltinPlugins[1], source: "cc-plugin-plugin-authoring@marketplace" }],
+        [{ ...renamedBuiltinPlugins[1], path: "/opt/claude/plugins/plugin-authoring" }],
+        [{ name: "plugin-authoring", path: "builtin", source: "plugin-authoring@builtin" }],
         [...builtinPlugins, { name: "other", path: "/tmp/other", source: "other@local" }],
         ["agents-md"],
         [null],
@@ -78,11 +108,13 @@ test("rejects any plugin other than the exact builtin inventory", () => {
 });
 
 test("rejects slash commands and skills alongside the builtin plugins", () => {
-    for (const extra of [{ slash_commands: ["review"] }, { skills: ["debug"] }]) {
-        assert.throws(
-            () => validateClaudeInitialization({ ...base, plugins: builtinPlugins, ...extra }, noTools),
-            (error) => error.code === "isolation_customizations",
-        );
+    for (const plugins of [builtinPlugins, renamedBuiltinPlugins]) {
+        for (const extra of [{ slash_commands: ["review"] }, { skills: ["debug"] }, { skills: ["plugin-authoring"] }]) {
+            assert.throws(
+                () => validateClaudeInitialization({ ...base, plugins, ...extra }, noTools),
+                (error) => error.code === "isolation_customizations",
+            );
+        }
     }
 });
 

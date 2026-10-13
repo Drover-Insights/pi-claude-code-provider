@@ -91,10 +91,16 @@ export function isCacheBreakpointLimit(detail: string): boolean {
   return CACHE_BREAKPOINT_LIMIT.test(detail);
 }
 
-// Claude Code 2.1.280 and later always report these builtin plugins, even with
-// every customization source disabled. Any other plugin, or any variation in
-// their shape, is still an unexpected customization.
-const BUILTIN_PLUGIN_NAMES = new Set(["agents-md", "telemetry"]);
+// Claude Code reports these builtin plugins even with every customization source
+// disabled: 2.1.280 through 2.1.295 report the first set, and 2.1.296 renamed
+// agents-md, dropped telemetry, and added plugin-authoring, whose one skill the
+// empty skills inventory keeps out. A session's plugins must all come from one
+// set; a mix of sets, any other plugin, or any variation in their shape is still
+// an unexpected customization.
+const BUILTIN_PLUGIN_SETS: readonly ReadonlySet<string>[] = [
+  new Set(["agents-md", "telemetry"]),
+  new Set(["cc-plugin-agents-md", "cc-plugin-plugin-authoring"]),
+];
 
 function onlyBuiltinPlugins(plugins: unknown[]): boolean {
   const seen = new Set<string>();
@@ -102,11 +108,11 @@ function onlyBuiltinPlugins(plugins: unknown[]): boolean {
     if (!plugin || typeof plugin !== "object" || Array.isArray(plugin)) return false;
     const entry = plugin as Record<string, unknown>;
     const name = entry.name;
-    if (typeof name !== "string" || !BUILTIN_PLUGIN_NAMES.has(name) || seen.has(name)) return false;
+    if (typeof name !== "string" || seen.has(name)) return false;
     if (Object.keys(entry).length !== 3 || entry.path !== "builtin" || entry.source !== `${name}@builtin`) return false;
     seen.add(name);
   }
-  return true;
+  return BUILTIN_PLUGIN_SETS.some((set) => [...seen].every((name) => set.has(name)));
 }
 
 export function validateClaudeInitialization(value: unknown, expectation: ClaudeInitializationExpectation): string {
