@@ -225,3 +225,46 @@ export function requireRecord(value: unknown, field: string): Record<string, unk
   }
   return value as Record<string, unknown>;
 }
+
+/** Read-only count projection. All original protocol/guard code above is unchanged. */
+export function summarizeClaudeInitialization(record: Record<string, unknown>): Readonly<Record<string, number | boolean>> {
+  const result: Record<string, number | boolean> = {};
+  for (const [field, prefix] of [["slash_commands", "slashCommands"], ["skills", "skills"], ["plugins", "plugins"]] as const) {
+    const inventory = record[field];
+    result[`${prefix}Valid`] = Array.isArray(inventory);
+    if (Array.isArray(inventory)) result[`${prefix}Count`] = inventory.length;
+  }
+  if (Array.isArray(record.plugins)) {
+    const plugins: unknown[] = record.plugins;
+    result.pluginStringCount = plugins.filter(value => typeof value === "string").length;
+    result.pluginObjectCount = plugins.filter(value => value !== null && typeof value === "object" && !Array.isArray(value)).length;
+    result.pluginOtherCount = plugins.length - result.pluginStringCount - result.pluginObjectCount;
+    result.pluginExactShapeCount = 0;
+    result.pluginBuiltinPathCount = 0;
+    result.pluginBuiltinSourceCount = 0;
+    result.pluginKnownNameCount = 0;
+    result.pluginUnknownBuiltinCount = 0;
+    result.pluginDuplicateNameCount = 0;
+    const seen = new Set<string>();
+    for (const value of plugins) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const plugin = value as Record<string, unknown>;
+      const exact = Object.keys(plugin).length === 3;
+      const builtinPath = plugin.path === "builtin";
+      const name = plugin.name;
+      const builtinSource = typeof name === "string" && plugin.source === `${name}@builtin`;
+      const known = typeof name === "string" && BUILTIN_PLUGIN_SETS.some(set => set.has(name));
+      result.pluginExactShapeCount += Number(exact);
+      result.pluginBuiltinPathCount += Number(builtinPath);
+      result.pluginBuiltinSourceCount += Number(builtinSource);
+      result.pluginKnownNameCount += Number(known);
+      result.pluginUnknownBuiltinCount += Number(exact && builtinPath && builtinSource && !known);
+      if (typeof name === "string") {
+        result.pluginDuplicateNameCount += Number(seen.has(name));
+        seen.add(name);
+      }
+    }
+    result.builtinPluginsOnly = onlyBuiltinPlugins(plugins);
+  }
+  return Object.freeze(result);
+}

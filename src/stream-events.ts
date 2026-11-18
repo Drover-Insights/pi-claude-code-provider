@@ -2,6 +2,7 @@ import { parseStreamingJson } from "@earendil-works/pi-ai";
 import type { AssistantMessageEventStream, ToolCall } from "@earendil-works/pi-ai";
 import { TRANSCRIPT_BREAKPOINT_ENV } from "./claude-args.ts";
 import { ClaudeCodeError } from "./errors.ts";
+import { initializationRejectionDetail } from "./startup-rejection.ts";
 import {
   isCacheBreakpointLimit,
   parseRateLimitNotice,
@@ -183,11 +184,15 @@ export class ClaudeEventMapper {
 
   private validateInit(record: StreamEventEnvelope): void {
     if (this.initialized) throw new ClaudeCodeError("protocol_init", "Claude emitted duplicate initialization");
-    this.output.responseModel = validateClaudeInitialization(record, {
-      tools: this.expectedTools,
-      mcpServer: this.expectedTools.size === 0 ? "none" : "pi",
-      privatePaths: this.privatePaths,
-    });
+    try {
+      this.output.responseModel = validateClaudeInitialization(record, {
+        tools: this.expectedTools,
+        mcpServer: this.expectedTools.size === 0 ? "none" : "pi",
+        privatePaths: this.privatePaths,
+      });
+    } catch (error) {
+      throw initializationRejectionDetail(error, record as Record<string, unknown>);
+    }
     this.initialized = true;
     // Validated initialization is this transport's analogue of a received
     // response: capabilities are known and no content has been published yet.
