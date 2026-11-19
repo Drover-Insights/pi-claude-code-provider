@@ -94,12 +94,14 @@ export function isCacheBreakpointLimit(detail: string): boolean {
 // Claude Code reports these builtin plugins even with every customization source
 // disabled: 2.1.280 through 2.1.295 report the first set, and 2.1.296 renamed
 // agents-md, dropped telemetry, and added plugin-authoring, whose one skill the
-// empty skills inventory keeps out. A session's plugins must all come from one
+// empty skills inventory keeps out. 2.1.322 added privacy, which loads
+// unconditionally after agents-md and telemetry. A session's plugins must all come from one
 // set; a mix of sets, any other plugin, or any variation in their shape is still
 // an unexpected customization.
 const BUILTIN_PLUGIN_SETS: readonly ReadonlySet<string>[] = [
   new Set(["agents-md", "telemetry"]),
   new Set(["cc-plugin-agents-md", "cc-plugin-plugin-authoring"]),
+  new Set(["cc-plugin-agents-md", "cc-plugin-plugin-authoring", "cc-plugin-privacy"]),
 ];
 
 function onlyBuiltinPlugins(plugins: unknown[]): boolean {
