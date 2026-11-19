@@ -5,6 +5,7 @@
 ### Fixed
 
 - On Claude Code 2.1.296, requests no longer fail with `isolation_customizations`. That release renames and replaces the built-in plugins it always reports, and the provider now accepts them. Any other plugin, or a mix of the old and new built-ins, is still rejected ([#22](https://github.com/Drover-Insights/pi-claude-code-provider/issues/22)).
+- On Claude Code 2.1.322 and later, requests no longer fail with `isolation_customizations`. Those releases also report the built-in `cc-plugin-privacy` plugin, which the provider now accepts alongside the 2.1.296 built-ins. Any other plugin, including `cc-plugin-easel`, is still rejected.
 
 ## [0.3.0] - 2026-09-13
 

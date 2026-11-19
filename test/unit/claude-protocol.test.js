@@ -53,6 +53,11 @@ const renamedBuiltinPlugins = [
     { name: "cc-plugin-agents-md", path: "builtin", source: "cc-plugin-agents-md@builtin" },
     { name: "cc-plugin-plugin-authoring", path: "builtin", source: "cc-plugin-plugin-authoring@builtin" },
 ];
+// Claude Code 2.1.322 added the privacy builtin plugin.
+const privacyBuiltinPlugins = [
+    ...renamedBuiltinPlugins,
+    { name: "cc-plugin-privacy", path: "builtin", source: "cc-plugin-privacy@builtin" },
+];
 const noTools = { tools: new Set(), mcpServer: "none" };
 
 test("accepts the builtin plugins Claude Code always reports", () => {
@@ -68,8 +73,17 @@ test("accepts the renamed builtin plugins Claude Code 2.1.296 reports", () => {
     assert.equal(validateClaudeInitialization({ ...base, plugins: [renamedBuiltinPlugins[1]] }, noTools), "claude-sonnet-5");
 });
 
+test("accepts the builtin plugins Claude Code 2.1.322 reports", () => {
+    assert.equal(validateClaudeInitialization({ ...base, plugins: privacyBuiltinPlugins }, noTools), "claude-sonnet-5");
+    assert.equal(validateClaudeInitialization({ ...base, plugins: [...privacyBuiltinPlugins].reverse() }, noTools), "claude-sonnet-5");
+    assert.equal(validateClaudeInitialization({ ...base, plugins: [privacyBuiltinPlugins[2]] }, noTools), "claude-sonnet-5");
+});
+
 test("rejects a mix of the original and renamed builtin plugin sets", () => {
     for (const plugins of [
+        [builtinPlugins[0], privacyBuiltinPlugins[2]],
+        [builtinPlugins[1], privacyBuiltinPlugins[2]],
+        [...builtinPlugins, privacyBuiltinPlugins[2]],
         [builtinPlugins[0], renamedBuiltinPlugins[0]],
         [builtinPlugins[1], renamedBuiltinPlugins[1]],
         [...builtinPlugins, ...renamedBuiltinPlugins],
@@ -95,6 +109,11 @@ test("rejects any plugin other than the exact builtin inventory", () => {
         [{ ...renamedBuiltinPlugins[1], source: "cc-plugin-plugin-authoring@marketplace" }],
         [{ ...renamedBuiltinPlugins[1], path: "/opt/claude/plugins/plugin-authoring" }],
         [{ name: "plugin-authoring", path: "builtin", source: "plugin-authoring@builtin" }],
+        [{ name: "privacy", path: "builtin", source: "privacy@builtin" }],
+        [{ ...privacyBuiltinPlugins[2], source: "cc-plugin-privacy@marketplace" }],
+        [{ ...privacyBuiltinPlugins[2], path: "/opt/claude/plugins/privacy" }],
+        [privacyBuiltinPlugins[2], privacyBuiltinPlugins[2]],
+        [...privacyBuiltinPlugins, { name: "cc-plugin-easel", path: "builtin", source: "cc-plugin-easel@builtin" }],
         [...builtinPlugins, { name: "other", path: "/tmp/other", source: "other@local" }],
         ["agents-md"],
         [null],
@@ -108,7 +127,7 @@ test("rejects any plugin other than the exact builtin inventory", () => {
 });
 
 test("rejects slash commands and skills alongside the builtin plugins", () => {
-    for (const plugins of [builtinPlugins, renamedBuiltinPlugins]) {
+    for (const plugins of [builtinPlugins, renamedBuiltinPlugins, privacyBuiltinPlugins]) {
         for (const extra of [{ slash_commands: ["review"] }, { skills: ["debug"] }, { skills: ["plugin-authoring"] }]) {
             assert.throws(
                 () => validateClaudeInitialization({ ...base, plugins, ...extra }, noTools),
