@@ -21,7 +21,7 @@ import { writeDiagnosticReport } from "../src/diagnostics.ts";
 import { errorText, normalizeClaudeOverflow } from "../src/errors.ts";
 import { formatDoctorSummary, probeBridge } from "../src/doctor.ts";
 import { flushMetricsLog, getLastRequestMetrics, getLastSearchMetrics, getMetricsLogError } from "../src/metrics.ts";
-import { createClaudeFailoverStream } from "../src/failover.ts";
+import { createClaudeFailoverStream, formatFailoverExhaustion } from "../src/failover.ts";
 import { createClaudeStream } from "../src/provider.ts";
 import { cleanupStaleRuntimeDirectories, createRuntimeDirectory } from "../src/runtime-directories.ts";
 import { searchWithClaude } from "../src/web-search.ts";
@@ -126,6 +126,7 @@ export async function initializePiClaudeCodeProvider(
   // Pi's session directory, not process.cwd(): a resumed session takes its cwd
   // from the session file, and Pi's tools resolve paths against that one.
   let sessionCwd: string | undefined;
+  let notifyWarning: ((message: string) => void) | undefined;
 
   for (const provider of providers) {
     pi.registerProvider(provider.providerId, {
@@ -169,6 +170,7 @@ export async function initializePiClaudeCodeProvider(
       models,
       streamSimple: createClaudeFailoverStream(members, {
         onRateLimitNotice: (providerId, notice) => activeRateLimitNotifiers?.get(providerId)?.(notice),
+        onExhausted: (outcomes) => notifyWarning?.(`${NOTICE_PREFIX} ${formatFailoverExhaustion(outcomes)}`),
         workingDirectory: () => sessionCwd,
       }),
     });
@@ -177,6 +179,7 @@ export async function initializePiClaudeCodeProvider(
   pi.on("session_start", (_event, ctx) => {
     searchOutputs.open();
     sessionCwd = ctx.cwd;
+    notifyWarning = (message) => ctx.ui.notify(message, "warning");
     // The provider starts a process per tool round-trip; session scope prevents
     // Claude's repeated notice from surfacing throughout one Pi turn.
     activeRateLimitNotifiers = new Map(providers.map((provider) => [
@@ -203,6 +206,7 @@ export async function initializePiClaudeCodeProvider(
   pi.on("session_shutdown", async () => {
     activeRateLimitNotifiers = undefined;
     sessionCwd = undefined;
+    notifyWarning = undefined;
     try {
       await searchOutputs.close();
     } finally {
