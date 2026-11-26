@@ -66,8 +66,9 @@ export function createClaudeFailoverStream(
   members: readonly ClaudeFailoverMember[],
   dependencies: ClaudeFailoverDependencies = {},
 ) {
-  // Process-local: one closure per registered failover provider. Pi builds a new one only on reload, which it
-  // refuses while a request streams, so two closures never serve the same account at once in one process.
+  // Process-local and per closure: the single-flight bound and the benches cover only requests served by this
+  // closure. Whether Pi can have two closures for one account in a process (for example across a reload) is not
+  // established here; a new closure starts with no benches.
   const states = new Map<string, MemberState>();
   const now = dependencies.now ?? Date.now;
   const stateFor = (providerId: string): MemberState => {
@@ -192,9 +193,14 @@ export function createClaudeFailoverStream(
       const output = createOutput(model);
       output.stopReason = "error";
       output.errorMessage = `Claude accounts are rate limited: ${outcomes.map((entry) => entry.label).join(", ")}`;
-      dependencies.onExhausted?.(outcomes);
       outer.push({ type: "error", reason: "error", error: output });
       outer.end();
+      // Diagnostics are advisory: a failing callback (such as a stale session UI) must not affect the request.
+      try {
+        dependencies.onExhausted?.(outcomes);
+      } catch {
+        // Ignored by design.
+      }
     })();
     return outer;
   };

@@ -1238,6 +1238,23 @@ test("configured failover makes at most one recovery attempt per account at a ti
     }
 });
 
+test("configured failover still ends an exhausted request with its aggregate error when the diagnostics callback throws", async () => {
+    let clock = 1_900_000_000_000;
+    const f = await createSequencedFailover([["u"], ["u"]], { now: () => clock, onExhausted: () => { throw new Error("stale session UI"); } });
+    try {
+        let timer;
+        const result = await Promise.race([
+            f.request(),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("the exhausted request never ended")), 5_000); }),
+        ]).finally(() => clearTimeout(timer));
+        assert.equal(result.stopReason, "error");
+        assert.equal(result.errorMessage, "Claude accounts are rate limited: primary, secondary");
+        assert.deepEqual(await f.launches(), ["primary", "secondary"]);
+    } finally {
+        await f.cleanup();
+    }
+});
+
 test("configured failover diagnostics distinguish a fresh rejection from a cached bench using labels only", async () => {
     const start = 1_900_000_000_000;
     let clock = start;
