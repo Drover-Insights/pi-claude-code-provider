@@ -9,7 +9,7 @@ import initializePiClaudeCodeProvider, { createPiClaudeCodeProvider } from "../.
 import implementation, { initializePiClaudeCodeProvider as initializeConfiguredProvider } from "../../extensions/pi-claude-code-provider.ts";
 import { VERIFIED_VERSIONS, platformStatus } from "../../src/compatibility.ts";
 import { providerModelsForSubscription } from "../../src/catalog.ts";
-import { createClaudeFailoverStream } from "../../src/failover.ts";
+import { createClaudeFailoverStream, formatFailoverExhaustion } from "../../src/failover.ts";
 import { CAPTURED_CLAUDE_HELP_PATH, ELIGIBLE_CLAUDE_AUTH } from "../support/claude-fixture.js";
 import { nodeFixtureSource } from "../support/node-fixture.js";
 
@@ -74,6 +74,7 @@ async function createFakeClaude(searchResult = "ok", {
     requestLogPath,
     reportCwd = false,
     configRootResults = {},
+    configRootSequence = {},
     configRootAuth = {},
     defaultAuth = ELIGIBLE_CLAUDE_AUTH,
     failAuthWithConfigRoot = false,
@@ -104,6 +105,25 @@ else {
     const providerMode = process.argv.includes("--system-prompt-file");
     process.stdout.write(JSON.stringify(providerMode ? ${JSON.stringify(providerInit)} : ${JSON.stringify(init)}) + "\\n");
     if (${JSON.stringify(requestLogPath)}) require("node:fs").appendFileSync(${JSON.stringify(requestLogPath)}, String(process.env.CLAUDE_CONFIG_DIR) + "\\n");
+    // A per-root step list, one step per launch (the last repeats): "u" is a rejection without a reset,
+    // a number is a rejection resetting at that Unix second, "ok" succeeds and "error" is a non-quota failure.
+    const sequence = ${JSON.stringify(configRootSequence)}[process.env.CLAUDE_CONFIG_DIR];
+    if (sequence) {
+      const fs = require("node:fs");
+      const counter = require("node:path").join(${JSON.stringify(directory)}, "sequence-" + Buffer.from(String(process.env.CLAUDE_CONFIG_DIR)).toString("hex"));
+      const index = fs.existsSync(counter) ? Number(fs.readFileSync(counter, "utf8")) : 0;
+      fs.writeFileSync(counter, String(index + 1));
+      const step = sequence[Math.min(index, sequence.length - 1)];
+      if (step === "ok") process.stdout.write(JSON.stringify({type:"result",is_error:false,result:"ok"}) + "\\n");
+      else if (step === "error") {
+        process.stdout.write(JSON.stringify({type:"result",is_error:true,api_error_status:503,result:"synthetic unavailable"}) + "\\n");
+        process.exitCode = 1;
+      } else {
+        process.stdout.write(JSON.stringify({type:"rate_limit_event",rate_limit_info:{status:"rejected",rateLimitType:"five_hour",...(typeof step === "number" ? {resetsAt: step} : {})}}) + "\\n");
+        process.exitCode = 1;
+      }
+      return;
+    }
     if (${JSON.stringify(partialBeforeRateLimitRoots)}.includes(process.env.CLAUDE_CONFIG_DIR)) {
       process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"message_start",message:{id:"msg_partial",model:"claude-sonnet-5",usage:{}}}}) + "\\n");
       process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_start",index:0,content_block:{type:"text",text:""}}}) + "\\n");
@@ -1102,6 +1122,173 @@ test("configured failover retries an account after its reported reset even when 
     }
 });
 
+const MINUTE = 60_000;
+
+async function createSequencedFailover(sequences, { now, delayMs = 0, onExhausted } = {}) {
+    const labels = ["primary", "secondary", "tertiary"];
+    const roots = await Promise.all(sequences.map((_, index) =>
+        mkdtemp(join(tmpdir(), `pi-claude-code-provider-${labels[index]}-`)).then(realpath)));
+    const requestLogPath = join(roots[0], "requests.log");
+    const { directory, executable } = await createFakeClaude("ok", {
+        searchDelayMs: delayMs,
+        configRootSequence: Object.fromEntries(roots.map((root, index) => [root, sequences[index]])),
+        requestLogPath,
+    });
+    const installation = (configRoot) => ({ executable, version: VERIFIED_VERSIONS.claudeCode, subscriptionType: "pro", configRoot });
+    const streamSimple = createClaudeFailoverStream(roots.map((root, index) => ({
+        providerId: `claude-${labels[index]}`, label: labels[index], installation: installation(root),
+    })), { now, onExhausted, workingDirectory: () => tmpdir() });
+    const configured = providerModelsForSubscription("pro").find((model) => model.id === "sonnet");
+    const model = { ...configured, provider: "claude-auto", api: "pi-claude-code-provider-headless", baseUrl: "pi-claude-code-provider://local" };
+    const context = { messages: [{ role: "user", content: "hello", timestamp: 1 }], tools: [] };
+    return {
+        roots,
+        request: () => streamSimple(model, context, { reasoning: "medium" }).result(),
+        launches: async () => {
+            const text = await readFile(requestLogPath, "utf8").catch(() => "");
+            return text.split("\n").filter(Boolean).map((root) => labels[roots.indexOf(root)]);
+        },
+        cleanup: () => Promise.all([...roots, directory].map((path) => rm(path, { recursive: true, force: true }))),
+    };
+}
+
+/** After `primary` was rejected at `rejectedAt`, it is skipped until exactly `minutes` later. */
+async function expectBenched(f, setClock, rejectedAt, minutes) {
+    setClock(rejectedAt + minutes * MINUTE - 1);
+    const before = (await f.launches()).length;
+    assert.equal((await f.request()).stopReason, "stop");
+    assert.deepEqual((await f.launches()).slice(before), ["secondary"], `primary is benched for ${minutes} minutes`);
+    setClock(rejectedAt + minutes * MINUTE);
+}
+
+test("configured failover benches an account rejected without a reset for 15 minutes, then a real request tries it again", async () => {
+    let clock = 1_900_000_000_000;
+    const f = await createSequencedFailover([["u", "ok"], ["ok"]], { now: () => clock });
+    try {
+        assert.equal((await f.request()).stopReason, "stop");
+        await expectBenched(f, (value) => { clock = value; }, 1_900_000_000_000, 15);
+        assert.equal((await f.request()).stopReason, "stop");
+        assert.deepEqual(await f.launches(), ["primary", "secondary", "secondary", "primary"]);
+    } finally {
+        await f.cleanup();
+    }
+});
+
+test("configured failover doubles the resetless bench to a 5-hour cap and resets it only after a confirmed success", async () => {
+    let clock = 1_900_000_000_000;
+    const setClock = (value) => { clock = value; };
+    const f = await createSequencedFailover([["u", "u", "u", "u", "u", "u", "u", "error", "u", "ok", "u"], ["ok"]], { now: () => clock });
+    try {
+        await f.request();
+        for (const minutes of [15, 30, 60, 120, 240, 300]) {
+            await expectBenched(f, setClock, clock, minutes);
+            await f.request();
+        }
+        await expectBenched(f, setClock, clock, 300);
+        // A non-quota failure is not a confirmed success: the streak continues at the cap.
+        const failed = await f.request();
+        assert.equal(failed.stopReason, "error");
+        assert.equal(failed.errorMessage.startsWith("Claude accounts are rate limited"), false);
+        assert.deepEqual((await f.launches()).slice(-1), ["primary"], "a non-quota failure never moves to another account");
+        await f.request();
+        await expectBenched(f, setClock, clock, 300);
+        assert.equal((await f.request()).stopReason, "stop");
+        assert.deepEqual((await f.launches()).slice(-1), ["primary"], "the recovered account answers the request");
+        // After the confirmed success, the next resetless rejection starts again at 15 minutes.
+        await f.request();
+        await expectBenched(f, setClock, clock, 15);
+    } finally {
+        await f.cleanup();
+    }
+});
+
+test("configured failover honours a reported reset over the resetless bench without resetting the streak", async () => {
+    const start = 1_900_000_000_000;
+    let clock = start;
+    const resetSeconds = (start + 120 * MINUTE) / 1000;
+    const f = await createSequencedFailover([["u", resetSeconds, "u"], ["ok"]], { now: () => clock });
+    try {
+        await f.request();
+        clock = start + 15 * MINUTE;
+        await f.request();
+        assert.deepEqual(await f.launches(), ["primary", "secondary", "primary", "secondary"]);
+        // The reported reset, two hours out, replaces the resetless bench and is never shortened.
+        await expectBenched(f, (value) => { clock = value; }, start, 120);
+        await f.request();
+        // That rejection was not a success, so the next resetless one is the second in the streak: 30 minutes.
+        await expectBenched(f, (value) => { clock = value; }, clock, 30);
+    } finally {
+        await f.cleanup();
+    }
+});
+
+test("configured failover makes at most one recovery attempt per account at a time within a process", async () => {
+    let clock = 1_900_000_000_000;
+    const f = await createSequencedFailover([["u", "ok"], ["ok"]], { now: () => clock, delayMs: 50 });
+    try {
+        await f.request();
+        clock += 15 * MINUTE;
+        const results = await Promise.all([f.request(), f.request()]);
+        assert.deepEqual(results.map((result) => result.stopReason), ["stop", "stop"]);
+        assert.deepEqual((await f.launches()).slice(2).sort(), ["primary", "secondary"], "the concurrent request skips the account being recovered");
+        await f.request();
+        assert.deepEqual((await f.launches()).slice(-1), ["primary"], "after the recovery succeeds the account is used normally");
+    } finally {
+        await f.cleanup();
+    }
+});
+
+test("configured failover still ends an exhausted request with its aggregate error when the diagnostics callback throws", async () => {
+    let clock = 1_900_000_000_000;
+    const f = await createSequencedFailover([["u"], ["u"]], { now: () => clock, onExhausted: () => { throw new Error("stale session UI"); } });
+    try {
+        let timer;
+        const result = await Promise.race([
+            f.request(),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("the exhausted request never ended")), 5_000); }),
+        ]).finally(() => clearTimeout(timer));
+        assert.equal(result.stopReason, "error");
+        assert.equal(result.errorMessage, "Claude accounts are rate limited: primary, secondary");
+        assert.deepEqual(await f.launches(), ["primary", "secondary"]);
+    } finally {
+        await f.cleanup();
+    }
+});
+
+test("configured failover diagnostics distinguish a fresh rejection from a cached bench using labels only", async () => {
+    const start = 1_900_000_000_000;
+    let clock = start;
+    const resetSeconds = (start + 60 * MINUTE) / 1000;
+    const records = [];
+    const f = await createSequencedFailover([["u"], [resetSeconds]], { now: () => clock, onExhausted: (outcomes) => records.push(outcomes) });
+    try {
+        const first = await f.request();
+        assert.equal(first.errorMessage, "Claude accounts are rate limited: primary, secondary", "the error message is unchanged for existing consumers");
+        clock += 1;
+        const second = await f.request();
+        assert.equal(second.errorMessage, first.errorMessage);
+        assert.deepEqual(await f.launches(), ["primary", "secondary"], "the second request contacts no account");
+        assert.deepEqual(records, [
+            [
+                { label: "primary", outcome: "rejected", reset: "unknown", until: start + 15 * MINUTE },
+                { label: "secondary", outcome: "rejected", reset: "known", until: resetSeconds * 1000 },
+            ],
+            [
+                { label: "primary", outcome: "benched", reset: "unknown", until: start + 15 * MINUTE },
+                { label: "secondary", outcome: "benched", reset: "known", until: resetSeconds * 1000 },
+            ],
+        ]);
+        const text = formatFailoverExhaustion(records[1]);
+        assert.equal(text, `Claude accounts unavailable: primary skipped, benched until ${new Date(start + 15 * MINUTE).toISOString()} (reset unknown); `
+            + `secondary skipped, benched until ${new Date(resetSeconds * 1000).toISOString()} (reported reset)`);
+        assert.equal(f.roots.some((root) => text.includes(root)), false);
+        assert.equal(formatFailoverExhaustion([{ label: "primary", outcome: "recovering" }]),
+            "Claude accounts unavailable: primary skipped, a recovery attempt is in flight");
+    } finally {
+        await f.cleanup();
+    }
+});
+
 test("configured failover keeps a retry in the directory where the request started", async () => {
     const [primaryRoot, secondaryRoot, startDirectory, laterDirectory] = await Promise.all([
         mkdtemp(join(tmpdir(), "pi-claude-code-provider-primary-")),
@@ -1200,7 +1387,8 @@ test("configured failover reports labeled exhaustion after trying each account o
                 order: ["claude-primary", "claude-secondary"],
             },
         })(pi.api);
-        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify() {} } });
+        const notices = [];
+        pi.handlers.get("session_start")[0]({}, { cwd: tmpdir(), ui: { notify(message) { notices.push(message); } } });
         const provider = pi.providers.get("claude-auto");
         const configured = provider.models.find((model) => model.id === "sonnet");
         const model = { ...configured, provider: "claude-auto", api: provider.api, baseUrl: provider.baseUrl };
@@ -1209,11 +1397,15 @@ test("configured failover reports labeled exhaustion after trying each account o
         const result = await provider.streamSimple(model, context, { reasoning: "medium" }).result();
         assert.equal(result.stopReason, "error");
         assert.match(result.errorMessage, /primary.*secondary/i);
+        const diagnostics = notices.filter((message) => message.includes("Claude accounts unavailable"));
+        assert.equal(diagnostics.length, 1);
+        assert.match(diagnostics[0], /^\[pi-claude-code-provider\] Claude accounts unavailable: primary rejected now, benched until \S+Z \(reset unknown\); secondary rejected now, benched until \S+Z \(reset unknown\)$/);
+        assert.equal(diagnostics[0].includes(primaryRoot) || diagnostics[0].includes(secondaryRoot), false);
         assert.equal(result.errorMessage.includes(primaryRoot), false);
         assert.equal(result.errorMessage.includes(secondaryRoot), false);
         assert.deepEqual((await readFile(requestLogPath, "utf8")).trim().split("\n"), [primaryRoot, secondaryRoot]);
-        // Both accounts stay exhausted without a reset, so the next request launches
-        // nothing and still names every skipped account.
+        // Both accounts stay benched after a rejection without a reset, so the next
+        // request launches nothing and still names every skipped account.
         const skipped = await provider.streamSimple(model, context, { reasoning: "medium" }).result();
         assert.equal(skipped.errorMessage, "Claude accounts are rate limited: primary, secondary");
         assert.deepEqual((await readFile(requestLogPath, "utf8")).trim().split("\n"), [primaryRoot, secondaryRoot]);
